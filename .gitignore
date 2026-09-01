@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Node / Vercel
+node_modules/
+.vercel/
+
+# Scraped output (data, not code)
+images/
+*.xlsx
+*.csv
+*.zip

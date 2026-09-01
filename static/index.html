@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Product Scraper</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --ink: #16181d; --muted: #6b7280;
+    --line: #e3e6ea; --accent: #2f6feb; --accent-ink: #fff;
+    --log-bg: #111318; --log-ink: #d7dae0; --danger: #c0392b; --ok: #1c9c5b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --card: #171a20; --ink: #e8eaed; --muted: #98a0ad;
+      --line: #262b34; --log-bg: #0b0d11; --log-ink: #cfd4dc;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink); padding: 32px 16px;
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 820px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; padding: 20px; margin-bottom: 16px;
+  }
+  label { display: block; font-weight: 600; margin-bottom: 6px; font-size: 14px; }
+  .hint { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
+  .hint code { background: var(--bg); padding: 1px 5px; border-radius: 4px; }
+  input[type=text] {
+    width: 100%; padding: 10px 12px; font-size: 15px; color: var(--ink);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  }
+  input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .field + .field { margin-top: 18px; }
+  .row { display: flex; gap: 10px; align-items: center; margin-top: 20px; flex-wrap: wrap; }
+  button {
+    font: inherit; font-weight: 600; padding: 10px 18px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--card); color: var(--ink);
+    cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  #status { color: var(--muted); font-size: 14px; margin-left: auto; }
+  #status.done { color: var(--ok); font-weight: 600; }
+  #status.failed { color: var(--danger); font-weight: 600; }
+  progress { width: 100%; height: 8px; margin-top: 16px; display: none; }
+  pre#log {
+    display: none; background: var(--log-bg); color: var(--log-ink);
+    padding: 14px; border-radius: 10px; max-height: 340px; overflow: auto;
+    font: 12px/1.55 ui-monospace, Consolas, monospace; margin: 0; white-space: pre-wrap;
+  }
+  .err { color: #ff8b7d; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Product Scraper</h1>
+  <p class="sub">Pull product names, prices and images from any Shopify or WooCommerce store.</p>
+
+  <div class="card">
+    <div class="field">
+      <label for="site">Website link</label>
+      <input id="site" type="text" placeholder="tglcompany.com" autocomplete="off" spellcheck="false">
+      <p class="hint">Paste the store address. A full page URL works too.</p>
+    </div>
+
+    <div class="field">
+      <label for="collection">Collection / page name <span style="font-weight:400;color:var(--muted)">- optional</span></label>
+      <input id="collection" type="text" placeholder="leave empty for every product" autocomplete="off" spellcheck="false">
+      <p class="hint">Shopify collection or WooCommerce category. Accepts <code>luggage</code>, <code>/collections/luggage</code>, <code>/product-category/mugs</code>, or the full URL.</p>
+    </div>
+
+    <div class="field">
+      <label for="out">Save into</label>
+      <input id="out" type="text" spellcheck="false">
+      <p class="hint">A folder named after the store is created here, holding <code>images/</code>, <code>products.xlsx</code> and <code>products.csv</code>.</p>
+    </div>
+
+    <div class="row">
+      <button id="start" class="primary">Start scraping</button>
+      <button id="stop" disabled>Stop</button>
+      <button id="open" disabled>Open folder</button>
+      <button id="zip" disabled>Download ZIP</button>
+      <span id="status">Ready</span>
+    </div>
+
+    <progress id="bar"></progress>
+  </div>
+
+  <pre id="log"></pre>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const logEl = $("log"), statusEl = $("status"), bar = $("bar");
+let jobId = null, cursor = 0, timer = null;
+
+function log(text) {
+  logEl.style.display = "block";
+  const span = document.createElement("span");
+  if (/^(ERROR|\s*(image|Product) error)/.test(text)) span.className = "err";
+  span.textContent = text + "\n";
+  logEl.appendChild(span);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setStatus(text, cls) {
+  statusEl.textContent = text;
+  statusEl.className = cls || "";
+}
+
+function setRunning(running) {
+  $("start").disabled = running;
+  $("stop").disabled = !running;
+  bar.style.display = running ? "block" : "none";
+  if (running) {
+    $("open").disabled = true;
+    $("zip").disabled = true;
+  }
+}
+
+async function api(path, options) {
+  const res = await fetch(path, options);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || data.error || "Request failed");
+  return data;
+}
+
+async function start() {
+  const site = $("site").value.trim();
+  if (!site) { log("Paste the website link first."); return; }
+
+  logEl.innerHTML = "";
+  logEl.style.display = "none";
+  cursor = 0;
+  setRunning(true);
+  setStatus("Working...");
+
+  try {
+    const data = await api("/api/scrape", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        site,
+        collection: $("collection").value.trim(),
+        output_dir: $("out").value.trim(),
+      }),
+    });
+    jobId = data.job_id;
+    timer = setInterval(poll, 600);
+  } catch (e) {
+    setRunning(false);
+    setStatus("Failed", "failed");
+    log("ERROR: " + e.message);
+  }
+}
+
+async function poll() {
+  try {
+    const s = await api(`/api/jobs/${jobId}?since=${cursor}`);
+    cursor = s.cursor;
+    s.lines.forEach(log);
+
+    if (s.status === "running") return;
+
+    clearInterval(timer);
+    setRunning(false);
+    $("open").disabled = !s.folder;
+    $("zip").disabled = !s.folder;
+
+    if (s.status === "done") setStatus("Done", "done");
+    else if (s.status === "stopped") setStatus("Stopped - partial results saved");
+    else setStatus("Failed", "failed");
+  } catch (e) {
+    clearInterval(timer);
+    setRunning(false);
+    setStatus("Failed", "failed");
+    log("ERROR: " + e.message);
+  }
+}
+
+$("start").addEventListener("click", start);
+
+$("stop").addEventListener("click", async () => {
+  setStatus("Stopping...");
+  try { await api(`/api/jobs/${jobId}/stop`, { method: "POST" }); } catch (e) { log("ERROR: " + e.message); }
+});
+
+$("open").addEventListener("click", async () => {
+  try {
+    await api(`/api/jobs/${jobId}/open`, { method: "POST" });
+  } catch (e) {
+    log("Could not open the folder (is the server on another machine?): " + e.message);
+  }
+});
+
+$("zip").addEventListener("click", () => {
+  window.location = `/api/jobs/${jobId}/zip`;
+});
+
+// Prefill the output box with the server's default folder.
+api("/api/defaults")
+  .then((d) => { $("out").value = d.output_dir; })
+  .catch(() => {});
+</script>
+</body>
+</html>

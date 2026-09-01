@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Product Scraper</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --ink: #16181d; --muted: #6b7280;
+    --line: #e3e6ea; --accent: #2f6feb; --accent-ink: #fff; --log-bg: #111318;
+    --log-ink: #d7dae0; --danger: #c0392b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --card: #171a20; --ink: #e8eaed; --muted: #98a0ad;
+      --line: #262b34; --log-bg: #0b0d11; --log-ink: #cfd4dc;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding: 32px 16px;
+  }
+  .wrap { max-width: 780px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; padding: 20px; margin-bottom: 16px;
+  }
+  label { display: block; font-weight: 600; margin-bottom: 6px; font-size: 14px; }
+  .hint { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
+  input[type=text] {
+    width: 100%; padding: 10px 12px; font-size: 15px; color: var(--ink);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  }
+  input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .field + .field { margin-top: 18px; }
+  .row { display: flex; gap: 10px; align-items: center; margin-top: 20px; flex-wrap: wrap; }
+  button {
+    font: inherit; font-weight: 600; padding: 10px 18px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--card); color: var(--ink);
+    cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  #status { color: var(--muted); font-size: 14px; margin-left: auto; }
+  progress { width: 100%; height: 8px; margin-top: 16px; display: none; }
+  pre#log {
+    display: none; background: var(--log-bg); color: var(--log-ink);
+    padding: 14px; border-radius: 10px; max-height: 320px; overflow: auto;
+    font: 12px/1.55 ui-monospace, Consolas, monospace; margin: 0; white-space: pre-wrap;
+  }
+  .err { color: var(--danger); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Product Scraper</h1>
+  <p class="sub">Pull product names, prices and images from any Shopify, WooCommerce or Odoo store into a ZIP.</p>
+
+  <div class="card">
+    <div class="field">
+      <label for="site">Website link</label>
+      <input id="site" type="text" placeholder="tglcompany.com" autocomplete="off" spellcheck="false">
+      <p class="hint">Paste the store address. A full page URL is fine too.</p>
+    </div>
+
+    <div class="field">
+      <label for="collection">Collection / page name <span style="font-weight:400;color:var(--muted)">- optional</span></label>
+      <input id="collection" type="text" placeholder="leave empty for every product" autocomplete="off" spellcheck="false">
+      <p class="hint">Shopify collection, WooCommerce category or Odoo category. Accepts <code>luggage</code>, <code>/collections/luggage</code>, <code>/product-category/mugs</code>, <code>/shop/category/bags-travel-181</code>, or the full URL.</p>
+    </div>
+
+    <div class="row">
+      <button id="start" class="primary">Start scraping</button>
+      <button id="stop" disabled>Stop</button>
+      <span id="status">Ready</span>
+    </div>
+
+    <progress id="bar" max="100" value="0"></progress>
+  </div>
+
+  <pre id="log"></pre>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+const COLUMNS = ["Product Name", "Price", "Image"];
+const CONCURRENCY = 6;          // parallel image / product-page fetches
+const MIME_EXT = {
+  "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/png": ".png",
+  "image/webp": ".webp", "image/gif": ".gif", "image/avif": ".avif",
+  "image/svg+xml": ".svg",
+};
+
+const $ = (id) => document.getElementById(id);
+const logEl = $("log"), bar = $("bar"), statusEl = $("status");
+let stopped = false;
+
+function log(msg, isError) {
+  logEl.style.display = "block";
+  const line = document.createElement("span");
+  if (isError) line.className = "err";
+  line.textContent = msg + "\n";
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setBusy(busy) {
+  $("start").disabled = busy;
+  $("stop").disabled = !busy;
+  bar.style.display = busy ? "block" : "none";
+}
+
+/** Excel needs the BOM to read UTF-8 correctly. */
+function toCsv(rows) {
+  const esc = (v) => {
+    const s = String(v ?? "");
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const lines = [COLUMNS.join(",")];
+  for (const r of rows) lines.push(COLUMNS.map((c) => esc(r[c])).join(","));
+  return "﻿" + lines.join("\r\n");
+}
+
+function toXlsx(rows) {
+  const data = rows.map((r) => COLUMNS.reduce((o, c) => ((o[c] = r[c]), o), {}));
+  const sheet = XLSX.utils.json_to_sheet(data, { header: COLUMNS });
+  const book = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(book, sheet, "Products");
+  return XLSX.write(book, { bookType: "xlsx", type: "array" });
+}
+
+/** Runs `worker` over `items`, `limit` at a time. */
+async function pool(items, limit, worker) {
+  let next = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length && !stopped) {
+      const i = next++;
+      await worker(items[i], i);
+    }
+  });
+  await Promise.all(runners);
+}
+
+function saveBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+async function run() {
+  stopped = false;
+  logEl.innerHTML = "";
+  logEl.style.display = "none";
+  bar.value = 0;
+  setBusy(true);
+  statusEl.textContent = "Reading products...";
+
+  const site = $("site").value.trim();
+  const collection = $("collection").value.trim();
+
+  if (!site) {
+    statusEl.textContent = "Ready";
+    setBusy(false);
+    log("Paste the website link first.", true);
+    return;
+  }
+
+  try {
+    const q = new URLSearchParams({ site, collection });
+    const res = await fetch("/api/products?" + q);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Could not read the store.");
+
+    const PLATFORM = { shopify: "Shopify", woocommerce: "WooCommerce (WordPress)", odoo: "Odoo" };
+    log("Site:       " + data.site);
+    log("Platform:   " + (PLATFORM[data.platform] || data.platform));
+    log("Collection: " + (data.collection || "ALL PRODUCTS"));
+    log("Products:   " + data.count);
+    if (!data.needsDetail) log("Images:     " + data.imageCount);
+    log("");
+
+    if (!data.count) throw new Error("No products found. Check the collection name.");
+
+    // Odoo has no product API: name, price and images live on each product
+    // page, so fetch those first. One request per product, six at a time.
+    if (data.needsDetail) {
+      statusEl.textContent = "Reading product pages...";
+      let read = 0;
+      const detailed = [];
+
+      await pool(data.rows, CONCURRENCY, async (row) => {
+        try {
+          const r = await fetch(
+            "/api/product?url=" + encodeURIComponent(row._detail) +
+            "&site=" + encodeURIComponent(data.site)
+          );
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.error || "HTTP " + r.status);
+          detailed.push(d.row);
+        } catch (e) {
+          log("  product failed: " + row._detail + " (" + e.message + ")", true);
+        }
+        read++;
+        bar.value = Math.round((read / data.rows.length) * 100);
+        statusEl.textContent = `Product pages ${read}/${data.rows.length}`;
+        if (read % 25 === 0 || read === data.rows.length)
+          log(`  ${read}/${data.rows.length} product pages`);
+      });
+
+      data.rows = detailed;
+      data.imageCount = detailed.reduce((n, r) => n + r._files.length, 0);
+      bar.value = 0;
+
+      if (stopped) {
+        // Stop means stop: zip the sheet for what was read, no image pass.
+        log("\nStopped after " + detailed.length + " products - zipping the sheet only.");
+      } else {
+        log("\nImages: " + data.imageCount + "\n");
+      }
+    }
+
+    const zip = new JSZip();
+    const images = zip.folder("images");
+    const jobs = [];
+    // keep the file object itself: its name may be corrected after download
+    data.rows.forEach((row) => row._files.forEach((file) => jobs.push(file)));
+
+    let done = 0, failed = 0;
+    const saved = new Set();          // filenames that actually made it into the zip
+
+    await pool(jobs, CONCURRENCY, async (job) => {
+      try {
+        const r = await fetch(
+          "/api/image?url=" + encodeURIComponent(job.url) +
+          "&site=" + encodeURIComponent(data.site)
+        );
+        if (!r.ok) throw new Error("HTTP " + r.status);
+
+        const blob = await r.blob();
+        // Odoo image URLs carry no extension, so trust what the server sent
+        // rather than leaving a png named .jpg.
+        const wanted = MIME_EXT[(blob.type || "").split(";")[0].trim().toLowerCase()];
+        if (wanted && !job.name.toLowerCase().endsWith(wanted)) {
+          job.name = job.name.replace(/\.[^.]*$/, wanted);
+        }
+
+        images.file(job.name, blob);
+        saved.add(job.name);
+      } catch (e) {
+        failed++;
+        log("  image failed: " + job.name + " (" + e.message + ")", true);
+      }
+      done++;
+      bar.value = Math.round((done / jobs.length) * 100);
+      statusEl.textContent = `Images ${done}/${jobs.length}`;
+      if (done % 10 === 0 || done === jobs.length) log(`  ${done}/${jobs.length} images`);
+    });
+
+    // Only list images that made it into the zip, in the store's own order
+    // (a plain sort would put "-10" before "-2" and the cover image last).
+    const rows = data.rows.map((r) => ({
+      "Product Name": r["Product Name"],
+      Price: r.Price,
+      Image: r._files.filter((f) => saved.has(f.name)).map((f) => f.name).join(","),
+    }));
+
+    zip.file("products.csv", toCsv(rows));
+    zip.file("products.xlsx", toXlsx(rows));
+
+    statusEl.textContent = "Building ZIP...";
+    log("\nBuilding ZIP...");
+    const blob = await zip.generateAsync({ type: "blob" });
+    saveBlob(blob, data.folder + ".zip");
+
+    log("\nDone! Saved " + data.folder + ".zip");
+    log("Rows: " + rows.length + " | images: " + (jobs.length - failed) +
+        (failed ? " | failed: " + failed : ""));
+    log("Unzip it to get images/, products.xlsx and products.csv.");
+    statusEl.textContent = stopped ? "Stopped - partial ZIP saved" : "Done";
+  } catch (e) {
+    log("\nERROR: " + e.message, true);
+    statusEl.textContent = "Failed";
+  } finally {
+    setBusy(false);
+  }
+}
+
+$("start").addEventListener("click", run);
+$("stop").addEventListener("click", () => {
+  stopped = true;
+  statusEl.textContent = "Stopping...";
+  log("\nStop requested - zipping what finished so far...");
+});
+</script>
+</body>
+</html>
