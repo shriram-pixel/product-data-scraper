@@ -41,14 +41,14 @@ A server cannot write folders onto your PC, so the browser downloads a ZIP
 named after the store:
 
 ```
-tglcompany-com.zip
+example-com.zip
   images/
   products.xlsx      <- Product Name, Price, Image
   products.csv
 ```
 
 Unzip it wherever you want the folder. A collection run zips as
-`tglcompany-com-luggage.zip` so runs never overwrite each other.
+`example-com-luggage.zip` so runs never overwrite each other.
 
 ## Notes and limits
 

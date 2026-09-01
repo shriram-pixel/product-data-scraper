@@ -57,7 +57,7 @@ export function getExtension(url) {
   return m ? m[1] : ".jpg";
 }
 
-/** 'tglcompany.com/collections/x' -> 'https://www.tglcompany.com' (origin only). */
+/** 'example.com/collections/x' -> 'https://www.example.com' (origin only). */
 export function normaliseSite(input) {
   let url = (input || "").trim();
   if (!url) throw new Error("Website link is required.");
@@ -96,7 +96,7 @@ export function cleanCollection(input) {
   return text.split("/")[0].split("?")[0] || null;
 }
 
-/** tglcompany.com + 'luggage' -> 'tglcompany-com-luggage' */
+/** example.com + 'luggage' -> 'example-com-luggage' */
 export function folderName(site, collection) {
   const host = new URL(site).hostname.replace(/^www\./, "");
   const name = createSlug(host.replace(/\./g, "-"));
@@ -138,8 +138,8 @@ export async function detectPlatform(site) {
 /**
  * Detect the platform, retrying with/without 'www.'.
  *
- * The two hostnames are not always the same site: giftsnpromo.com serves a
- * 404 for /shop while www.giftsnpromo.com serves the shop.
+ * The two hostnames are not always the same site: example-b2b.com serves a
+ * 404 for /shop while www.example-b2b.com serves the shop.
  */
 export async function resolvePlatform(site) {
   const url = new URL(site);

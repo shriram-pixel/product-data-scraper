@@ -3,77 +3,161 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>Product Scraper</title>
 <style>
   :root {
-    --bg: #f6f7f9; --card: #fff; --ink: #16181d; --muted: #6b7280;
-    --line: #e3e6ea; --accent: #2f6feb; --accent-ink: #fff; --log-bg: #111318;
-    --log-ink: #d7dae0; --danger: #c0392b;
+    --bg: #f4f6f9; --card: #fff; --raise: #fbfcfd;
+    --ink: #14171c; --muted: #66707e; --line: #e2e6ec;
+    --accent: #2f6feb; --accent-ink: #fff; --accent-soft: #e8effd;
+    --log-bg: #0f1218; --log-ink: #d5d9e0; --danger-ink: #c0392b;
+    --r: 14px;
+    --shadow: 0 1px 2px rgba(16,24,40,.05), 0 8px 24px -12px rgba(16,24,40,.18);
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #0f1115; --card: #171a20; --ink: #e8eaed; --muted: #98a0ad;
-      --line: #262b34; --log-bg: #0b0d11; --log-ink: #cfd4dc;
+      --bg: #0d0f13; --card: #161920; --raise: #1b1f27;
+      --ink: #e9ebef; --muted: #98a1af; --line: #272d38;
+      --accent: #4d86f7; --accent-soft: #18233a;
+      --log-bg: #0a0c10; --log-ink: #ced3db; --danger-ink: #ff8b7d;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.7);
     }
   }
   * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
   body {
     margin: 0; background: var(--bg); color: var(--ink);
-    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
-    padding: 32px 16px;
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: clamp(20px, 5vw, 56px) clamp(14px, 4vw, 24px);
+    -webkit-font-smoothing: antialiased;
   }
-  .wrap { max-width: 780px; margin: 0 auto; }
-  h1 { font-size: 22px; margin: 0 0 4px; }
-  .sub { color: var(--muted); margin: 0 0 24px; }
+  .wrap { max-width: 760px; margin: 0 auto; }
+
+  .head { display: flex; gap: 14px; align-items: center; margin-bottom: clamp(18px, 4vw, 28px); }
+  .mark {
+    flex: none; width: 42px; height: 42px; border-radius: 12px;
+    background: var(--accent); color: var(--accent-ink); display: grid; place-items: center;
+  }
+  .mark svg { width: 22px; height: 22px; }
+  h1 { font-size: clamp(20px, 4.5vw, 26px); letter-spacing: -.02em; line-height: 1.2; margin: 0; }
+  .sub { color: var(--muted); margin: 3px 0 0; font-size: clamp(13px, 3.4vw, 15px); }
+
   .card {
-    background: var(--card); border: 1px solid var(--line);
-    border-radius: 12px; padding: 20px; margin-bottom: 16px;
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--r);
+    padding: clamp(16px, 4vw, 24px); box-shadow: var(--shadow);
   }
-  label { display: block; font-weight: 600; margin-bottom: 6px; font-size: 14px; }
-  .hint { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
+  .field + .field { margin-top: 20px; }
+  label {
+    display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;
+    font-weight: 600; font-size: 14px; margin-bottom: 7px;
+  }
+  .opt {
+    font-weight: 400; font-size: 12px; color: var(--muted);
+    background: var(--raise); border: 1px solid var(--line);
+    padding: 1px 8px; border-radius: 999px;
+  }
+  /* 16px keeps iOS Safari from zooming the page on focus. */
   input[type=text] {
-    width: 100%; padding: 10px 12px; font-size: 15px; color: var(--ink);
-    background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+    width: 100%; padding: 11px 13px; font: inherit; font-size: 16px;
+    color: var(--ink); background: var(--raise);
+    border: 1px solid var(--line); border-radius: 10px;
+    transition: border-color .15s, box-shadow .15s, background .15s;
   }
-  input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
-  .field + .field { margin-top: 18px; }
-  .row { display: flex; gap: 10px; align-items: center; margin-top: 20px; flex-wrap: wrap; }
+  input[type=text]::placeholder { color: var(--muted); opacity: .75; }
+  input[type=text]:hover { border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); }
+  input[type=text]:focus {
+    outline: none; background: var(--card);
+    border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .hint { color: var(--muted); font-size: 13px; margin: 7px 0 0; }
+
+  .actions {
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--line);
+  }
   button {
-    font: inherit; font-weight: 600; padding: 10px 18px; border-radius: 8px;
+    font: inherit; font-weight: 600; font-size: 14px;
+    padding: 10px 18px; border-radius: 10px; cursor: pointer;
     border: 1px solid var(--line); background: var(--card); color: var(--ink);
-    cursor: pointer;
+    transition: transform .12s, background .15s, border-color .15s, opacity .15s;
   }
+  button:hover:not(:disabled) { background: var(--raise); border-color: var(--muted); }
+  button:active:not(:disabled) { transform: translateY(1px); }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
-  button:disabled { opacity: .5; cursor: not-allowed; }
-  #status { color: var(--muted); font-size: 14px; margin-left: auto; }
-  progress { width: 100%; height: 8px; margin-top: 16px; display: none; }
-  pre#log {
-    display: none; background: var(--log-bg); color: var(--log-ink);
-    padding: 14px; border-radius: 10px; max-height: 320px; overflow: auto;
-    font: 12px/1.55 ui-monospace, Consolas, monospace; margin: 0; white-space: pre-wrap;
+  button.primary:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent) 88%, #000); border-color: transparent;
   }
-  .err { color: var(--danger); font-weight: 600; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  #status {
+    margin-left: auto; font-size: 13px; color: var(--muted);
+    background: var(--raise); border: 1px solid var(--line);
+    padding: 5px 12px; border-radius: 999px; white-space: nowrap;
+  }
+
+  progress {
+    display: none; width: 100%; height: 6px; margin-top: 16px;
+    appearance: none; -webkit-appearance: none;
+    border: none; border-radius: 999px; overflow: hidden; background: var(--line);
+  }
+  progress::-webkit-progress-bar { background: var(--line); }
+  progress::-webkit-progress-value { background: var(--accent); border-radius: 999px; }
+  progress::-moz-progress-bar { background: var(--accent); }
+
+  pre#log {
+    display: none; margin: 16px 0 0; padding: 16px;
+    background: var(--log-bg); color: var(--log-ink);
+    border-radius: 12px; max-height: min(340px, 50vh); overflow: auto;
+    font: 12.5px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace;
+    white-space: pre-wrap; word-break: break-word; overscroll-behavior: contain;
+  }
+  .err { color: var(--danger-ink); font-weight: 600; }
+
+  .note { color: var(--muted); font-size: 12.5px; margin: 16px 2px 0; }
+  .note code {
+    background: var(--card); border: 1px solid var(--line);
+    padding: 1px 5px; border-radius: 5px;
+    font: 11.5px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+
+  /* Phones: buttons share a row at full width, status drops to its own line. */
+  @media (max-width: 560px) {
+    .actions > button { flex: 1 1 calc(50% - 5px); }
+    #status { margin-left: 0; flex: 1 1 100%; text-align: center; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>Product Scraper</h1>
-  <p class="sub">Pull product names, prices and images from any Shopify, WooCommerce or Odoo store into a ZIP.</p>
+  <header class="head">
+    <div class="mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 8v8a2 2 0 0 1-1 1.73l-7 4a2 2 0 0 1-2 0l-7-4A2 2 0 0 1 3 16V8a2 2 0 0 1 1-1.73l7-4a2 2 0 0 1 2 0l7 4A2 2 0 0 1 21 8z"/>
+        <path d="m3.3 7 8.7 5 8.7-5"/>
+        <path d="M12 22V12"/>
+      </svg>
+    </div>
+    <div>
+      <h1>Product Scraper</h1>
+      <p class="sub">Product names, prices and images from any Shopify, WooCommerce or Odoo store, packed into one ZIP.</p>
+    </div>
+  </header>
 
   <div class="card">
     <div class="field">
       <label for="site">Website link</label>
-      <input id="site" type="text" placeholder="tglcompany.com" autocomplete="off" spellcheck="false">
+      <input id="site" type="text" placeholder="example.com" autocomplete="off" spellcheck="false">
       <p class="hint">Paste the store address. A full page URL is fine too.</p>
     </div>
 
     <div class="field">
-      <label for="collection">Collection / page name <span style="font-weight:400;color:var(--muted)">- optional</span></label>
+      <label for="collection">Collection / page name <span class="opt">optional</span></label>
       <input id="collection" type="text" placeholder="leave empty for every product" autocomplete="off" spellcheck="false">
-      <p class="hint">Shopify collection, WooCommerce category or Odoo category. Accepts <code>luggage</code>, <code>/collections/luggage</code>, <code>/product-category/mugs</code>, <code>/shop/category/bags-travel-181</code>, or the full URL.</p>
     </div>
 
-    <div class="row">
+    <div class="actions">
       <button id="start" class="primary">Start scraping</button>
       <button id="stop" disabled>Stop</button>
       <span id="status">Ready</span>
@@ -83,6 +167,7 @@
   </div>
 
   <pre id="log"></pre>
+  <p class="note">The ZIP holds <code>images/</code>, <code>products.xlsx</code> and <code>products.csv</code>.</p>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>

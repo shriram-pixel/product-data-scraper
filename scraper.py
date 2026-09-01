@@ -81,7 +81,7 @@ def filename_key(url):
 
 
 def normalise_site(url):
-    """'tglcompany.com/collections/x' -> 'https://www.tglcompany.com' (origin only)."""
+    """'example.com/collections/x' -> 'https://www.example.com' (origin only)."""
     url = (url or "").strip()
     if not url:
         raise ValueError("Website link is required.")
@@ -114,7 +114,7 @@ def clean_collection(text):
 
 
 def folder_name(site, collection):
-    """tglcompany.com + 'luggage' -> 'tglcompany-com-luggage'"""
+    """example.com + 'luggage' -> 'example-com-luggage'"""
     host = urlparse(site).netloc.replace("www.", "")
     name = create_slug(host.replace(".", "-"))
     return f"{name}-{create_slug(collection)}" if collection else name
@@ -166,8 +166,8 @@ def resolve_platform(site, log=print):
     """
     Detect the platform, retrying with/without 'www.'.
 
-    The two hostnames are not always the same site: giftsnpromo.com serves a
-    404 for /shop while www.giftsnpromo.com serves the shop. Typing the bare
+    The two hostnames are not always the same site: example-b2b.com serves a
+    404 for /shop while www.example-b2b.com serves the shop. Typing the bare
     domain should still work.
     """
     parsed = urlparse(site)
