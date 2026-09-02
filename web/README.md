@@ -23,7 +23,7 @@ together at http://localhost:3000).
 
 | File | Role |
 | --- | --- |
-| `public/index.html` | The UI. Also does the zipping and builds the xlsx/csv. |
+| `public/index.html` | The UI. Also writes the files to disk and builds the xlsx/csv. |
 | `api/products.js` | `GET /api/products?site=&collection=` - the product list. |
 | `api/image.js` | `GET /api/image?url=&site=` - fetches one image. |
 | `api/product.js` | `GET /api/product?url=&site=` - one Odoo product page. |
@@ -37,8 +37,8 @@ means no ceiling on store size and a real progress bar.
 
 ## What you get
 
-Chrome and Edge ask once for a folder when you press Start, then write each
-file into it as it downloads:
+Pressing Start asks once for a folder, then writes each file into it as it
+downloads:
 
 ```
 <the folder you chose>/
@@ -52,14 +52,14 @@ Nothing accumulates in memory, so there is no ceiling on store size and
 nothing to unzip - the same shape `app.py` produces locally. A collection run
 saves under `example-com-luggage/` so runs never overwrite each other.
 
-Browsers without the folder picker (Firefox, Safari) download ZIPs instead,
-and so does cancelling the picker. Those split at ~300 MB into
-`example-com-part1.zip`, `example-com-part2.zip` and so on: unzip them all
-into the same folder and the `images/` directories merge. The spreadsheets
-ride in the **last** part, the only one written after every row is known, and
-list every image across every part. The splitting is not cosmetic - a finished
-part is written out and dropped, which is what keeps a large store inside the
-browser's memory.
+There is no ZIP. An earlier version built one in browser memory, which broke
+on large stores (`Array buffer allocation failed`) and, once split to work
+around that, handed back thirteen archives for a single run. Writing files as
+they arrive removes the problem rather than managing it.
+
+The trade is that **Chrome or Edge is required**. Firefox and Safari have no
+`showDirectoryPicker`, so the page tells you to switch rather than scraping
+into something it cannot save. Cancelling the picker does the same.
 
 ## Notes and limits
 
@@ -83,11 +83,7 @@ browser's memory.
 - The folder picker needs the click's user activation, so it is opened from the
   Start handler rather than inside `run()`. By the time the product list comes
   back that activation has expired and the call would be rejected.
-- On the ZIP fallback the archive is assembled from the generator's chunks
-  rather than with `generateAsync({type:"blob"})`. That call concatenates the
-  whole archive into one contiguous `Uint8Array` first, which throws
-  `Array buffer allocation failed` on a store of a few GB. Between the chunked
-  assembly and the 300 MB split, peak memory is one part rather than the whole
-  run.
-- On the ZIP fallback the browser asks once for permission to download multiple
-  files. Declining it loses every part after the first.
+- Chrome asks once for permission to edit the folder you choose. The grant is
+  per-folder, so a dedicated scrape folder keeps it to a single prompt.
+- Filenames are passed through a whitelist (`A-Za-z0-9._-`) before they reach
+  disk: Windows rejects `: ? * " < > |` and the API rejects `/`.
