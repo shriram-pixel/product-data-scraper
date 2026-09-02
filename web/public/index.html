@@ -167,7 +167,7 @@
   </div>
 
   <pre id="log"></pre>
-  <p class="note">The ZIP holds <code>images/</code>, <code>products.xlsx</code> and <code>products.csv</code>.</p>
+  <p class="note">Chrome and Edge ask for a folder and save <code>images/</code>, <code>products.xlsx</code> and <code>products.csv</code> straight into it. Other browsers download the same thing as ZIPs.</p>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
@@ -271,10 +271,60 @@ function zipToBlob(zip, onPercent) {
 }
 
 /**
- * Collects images into ZIPs, starting a new one each time the current part
- * passes PART_LIMIT. Splitting is what actually bounds memory: a finished
- * part is written out and dropped, releasing every image blob inside it.
- * Stores small enough for one part still get a single `<store>.zip`.
+ * Ask for a folder to save into. Must be called straight from the click
+ * handler: the picker needs the gesture, and by the time the product list has
+ * been fetched that activation is long gone.
+ */
+async function pickFolder() {
+  if (!("showDirectoryPicker" in window)) return null;
+  try {
+    return await window.showDirectoryPicker({ mode: "readwrite", id: "product-scraper" });
+  } catch (e) {
+    if (e.name !== "AbortError") log("Could not open the folder picker: " + e.message, true);
+    return null;
+  }
+}
+
+/** Windows rejects : ? * " < > | in filenames, and the API rejects "/". */
+function safeName(name) {
+  return name.replace(/[^A-Za-z0-9._-]/g, "-");
+}
+
+/**
+ * Writes each file to disk as it arrives. Nothing accumulates, so there is no
+ * archive to allocate and no ceiling on store size - the same shape `app.py`
+ * produces locally.
+ */
+async function createFolderSink(root, folder) {
+  const dir = await root.getDirectoryHandle(safeName(folder), { create: true });
+  const images = await dir.getDirectoryHandle("images", { create: true });
+
+  const put = async (parent, name, body) => {
+    const handle = await parent.getFileHandle(safeName(name), { create: true });
+    const file = await handle.createWritable();
+    await file.write(body);
+    await file.close();
+  };
+
+  return {
+    kind: "folder",
+    add: (name, blob) => put(images, name, blob),
+    finish: async (extras) => {
+      for (const [name, body] of Object.entries(extras)) await put(dir, name, body);
+      return folder;
+    },
+    get parts() {
+      return 1;
+    },
+  };
+}
+
+/**
+ * Fallback for browsers without the folder picker: collect images into ZIPs,
+ * starting a new one each time the current part passes PART_LIMIT. Splitting
+ * is what bounds memory here - a finished part is written out and dropped,
+ * releasing every image blob inside it. Stores small enough for one part still
+ * get a single `<store>.zip`.
  */
 const PART_LIMIT = 300 * 1024 * 1024; // image bytes per ZIP
 
@@ -318,6 +368,7 @@ function createParts(folder) {
   }
 
   return {
+    kind: "zip",
     add: (name, blob) =>
       serial(async () => {
         images.file(name, blob);
@@ -329,13 +380,13 @@ function createParts(folder) {
     // Always written, even when the last image happened to close a part, or
     // the sheets would be lost.
     finish: (extras) => serial(() => write(extras)),
-    get saved() {
+    get parts() {
       return saved;
     },
   };
 }
 
-async function run() {
+async function run(folderHandle) {
   stopped = false;
   logEl.innerHTML = "";
   logEl.style.display = "none";
@@ -407,7 +458,15 @@ async function run() {
       }
     }
 
-    const parts = createParts(data.folder);
+    const sink = folderHandle
+      ? await createFolderSink(folderHandle, data.folder)
+      : createParts(data.folder);
+    log(
+      sink.kind === "folder"
+        ? `Saving into ${data.folder}/ in the folder you chose.\n`
+        : "Saving as ZIP downloads.\n"
+    );
+
     const jobs = [];
     // keep the file object itself: its name may be corrected after download
     data.rows.forEach((row) => row._files.forEach((file) => jobs.push(file)));
@@ -439,7 +498,7 @@ async function run() {
       // Deliberately outside the catch: a failure to build the ZIP is not an
       // image failure, and must stop the run rather than be logged 600 times.
       if (blob) {
-        await parts.add(job.name, blob);
+        await sink.add(job.name, blob);
         saved.add(job.name);
       }
       done++;
@@ -456,7 +515,8 @@ async function run() {
       Image: r._files.filter((f) => saved.has(f.name)).map((f) => f.name).join(","),
     }));
 
-    const last = await parts.finish({
+    statusEl.textContent = "Writing the spreadsheets...";
+    const last = await sink.finish({
       "products.csv": toCsv(rows),
       "products.xlsx": toXlsx(rows),
     });
@@ -464,13 +524,15 @@ async function run() {
     log("\nDone!");
     log("Rows: " + rows.length + " | images: " + (jobs.length - failed) +
         (failed ? " | failed: " + failed : ""));
-    if (parts.saved > 1) {
-      log(`Saved as ${parts.saved} ZIPs - the store was too large for one file.`);
+    if (sink.kind === "folder") {
+      log(`Everything is in ${last}/ - images/, products.xlsx and products.csv.`);
+    } else if (sink.parts > 1) {
+      log(`Saved as ${sink.parts} ZIPs - the store was too large for one file.`);
       log(`Unzip them all into the same folder; the spreadsheets are in ${last}.`);
     } else {
       log("Unzip it to get images/, products.xlsx and products.csv.");
     }
-    statusEl.textContent = stopped ? "Stopped - partial ZIP saved" : "Done";
+    statusEl.textContent = stopped ? "Stopped - partial save" : "Done";
   } catch (e) {
     log("\nERROR: " + e.message, true);
     statusEl.textContent = "Failed";
@@ -479,7 +541,13 @@ async function run() {
   }
 }
 
-$("start").addEventListener("click", run);
+// The picker is opened here, not inside run(): it needs the click's user
+// activation, which would already have expired by the time the product list
+// came back. No picker (or a cancelled one) falls back to ZIP downloads.
+$("start").addEventListener("click", async () => {
+  const folder = await pickFolder();
+  await run(folder);
+});
 $("stop").addEventListener("click", () => {
   stopped = true;
   statusEl.textContent = "Stopping...";

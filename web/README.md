@@ -37,25 +37,29 @@ means no ceiling on store size and a real progress bar.
 
 ## What you get
 
-A server cannot write folders onto your PC, so the browser downloads a ZIP
-named after the store:
+Chrome and Edge ask once for a folder when you press Start, then write each
+file into it as it downloads:
 
 ```
-example-com.zip
-  images/
-  products.xlsx      <- Product Name, Price, Image
-  products.csv
+<the folder you chose>/
+  example-com/
+    images/
+    products.xlsx    <- Product Name, Price, Image
+    products.csv
 ```
 
-Unzip it wherever you want the folder. A collection run zips as
-`example-com-luggage.zip` so runs never overwrite each other.
+Nothing accumulates in memory, so there is no ceiling on store size and
+nothing to unzip - the same shape `app.py` produces locally. A collection run
+saves under `example-com-luggage/` so runs never overwrite each other.
 
-Past ~300 MB of images the download splits into `example-com-part1.zip`,
-`example-com-part2.zip` and so on. Unzip them all into the same folder and the
-`images/` directories merge. The spreadsheets ride in the **last** part, which
-is the only one written after every row is known; they list every image across
-every part. Splitting is not cosmetic - a finished part is written out and
-dropped, which is what keeps a large store inside the browser's memory.
+Browsers without the folder picker (Firefox, Safari) download ZIPs instead,
+and so does cancelling the picker. Those split at ~300 MB into
+`example-com-part1.zip`, `example-com-part2.zip` and so on: unzip them all
+into the same folder and the `images/` directories merge. The spreadsheets
+ride in the **last** part, the only one written after every row is known, and
+list every image across every part. The splitting is not cosmetic - a finished
+part is written out and dropped, which is what keeps a large store inside the
+browser's memory.
 
 ## Notes and limits
 
@@ -76,12 +80,14 @@ dropped, which is what keeps a large store inside the browser's memory.
   runs in.
 - Vercel caps a function response at ~4.5 MB, so an unusually large source
   image is skipped and logged rather than silently dropped.
-- The ZIP is built in browser memory, so it is assembled from the generator's
-  chunks rather than with `generateAsync({type:"blob"})`. That call concatenates
-  the whole archive into one contiguous `Uint8Array` first, which throws
+- The folder picker needs the click's user activation, so it is opened from the
+  Start handler rather than inside `run()`. By the time the product list comes
+  back that activation has expired and the call would be rejected.
+- On the ZIP fallback the archive is assembled from the generator's chunks
+  rather than with `generateAsync({type:"blob"})`. That call concatenates the
+  whole archive into one contiguous `Uint8Array` first, which throws
   `Array buffer allocation failed` on a store of a few GB. Between the chunked
-  assembly and the 300 MB split above, peak memory is one part rather than the
-  whole run - but a very large store is still calmer through the local
-  `app.py`, which streams straight to disk.
-- The browser will ask once for permission to download multiple files when a
-  store splits into parts. Declining it loses every part after the first.
+  assembly and the 300 MB split, peak memory is one part rather than the whole
+  run.
+- On the ZIP fallback the browser asks once for permission to download multiple
+  files. Declining it loses every part after the first.
