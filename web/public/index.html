@@ -276,12 +276,19 @@ function zipToBlob(zip, onPercent) {
  * been fetched that activation is long gone.
  */
 async function pickFolder() {
-  if (!("showDirectoryPicker" in window)) return null;
+  if (!("showDirectoryPicker" in window)) {
+    return { handle: null, why: "This browser has no folder picker - desktop Chrome or Edge has one." };
+  }
   try {
-    return await window.showDirectoryPicker({ mode: "readwrite", id: "product-scraper" });
+    const handle = await window.showDirectoryPicker({ mode: "readwrite", id: "product-scraper" });
+    return { handle, why: "" };
   } catch (e) {
-    if (e.name !== "AbortError") log("Could not open the folder picker: " + e.message, true);
-    return null;
+    // Reported through run() rather than logged here: run() clears the log as
+    // its first act, which would wipe the reason before anyone read it.
+    if (e.name === "AbortError") {
+      return { handle: null, why: "The folder picker was cancelled." };
+    }
+    return { handle: null, why: `The folder picker failed - ${e.name}: ${e.message}` };
   }
 }
 
@@ -386,7 +393,7 @@ function createParts(folder) {
   };
 }
 
-async function run(folderHandle) {
+async function run(folderHandle, noFolderReason) {
   stopped = false;
   logEl.innerHTML = "";
   logEl.style.display = "none";
@@ -461,12 +468,12 @@ async function run(folderHandle) {
     const sink = folderHandle
       ? await createFolderSink(folderHandle, data.folder)
       : createParts(data.folder);
-    log(
-      sink.kind === "folder"
-        ? `Saving into ${data.folder}/ in the folder you chose.\n`
-        : "No folder chosen, so this run downloads ZIPs instead.\n" +
-          "Chrome and Edge can write the files straight into a folder.\n"
-    );
+    if (sink.kind === "folder") {
+      log(`Saving into ${data.folder}/ in the folder you chose.\n`);
+    } else {
+      log(noFolderReason || "No folder was chosen.", true);
+      log("This run downloads ZIPs instead.\n");
+    }
 
     const jobs = [];
     // keep the file object itself: its name may be corrected after download
@@ -546,8 +553,8 @@ async function run(folderHandle) {
 // activation, which would already have expired by the time the product list
 // came back. No picker (or a cancelled one) falls back to ZIP downloads.
 $("start").addEventListener("click", async () => {
-  const folder = await pickFolder();
-  await run(folder);
+  const picked = await pickFolder();
+  await run(picked.handle, picked.why);
 });
 $("stop").addEventListener("click", () => {
   stopped = true;
