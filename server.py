@@ -4,27 +4,25 @@ Product Scraper - FastAPI server.
 Run:  python server.py          (then open http://127.0.0.1:8001)
   or: uvicorn server:app --reload
 
-Unlike the Vercel version, this is a normal long-running server, so it writes
-the folder straight to disk on the machine it runs on - run it on your own PC
-and you get exactly the folders app.py produced.
+Unlike the Vercel version, this is a normal long-running server, so Python
+writes the folder straight to disk. The browser is only the UI, which is why
+this works in Firefox and Safari: nothing is asked of the browser beyond
+showing a progress log. No folder picker, no archive.
 """
 
-import io
 import os
 import threading
 import subprocess
-import zipfile
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 import scraper
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 INDEX = os.path.join(BASE_DIR, "static", "index.html")
-DEFAULT_OUTPUT = os.path.join(os.path.expanduser("~"), "Desktop", "Scraped Products")
 
 app = FastAPI(title="Product Scraper")
 
@@ -36,7 +34,6 @@ jobs_lock = threading.Lock()
 class ScrapeRequest(BaseModel):
     site: str
     collection: str = ""
-    output_dir: str = ""
 
 
 class Job:
@@ -94,7 +91,7 @@ def index():
 
 @app.get("/api/defaults")
 def defaults():
-    return {"output_dir": DEFAULT_OUTPUT}
+    return {"output_dir": scraper.desktop_dir()}
 
 
 @app.post("/api/scrape")
@@ -104,11 +101,13 @@ def start_scrape(req: ScrapeRequest):
     except ValueError as e:
         raise HTTPException(400, str(e))
 
-    output_dir = (req.output_dir or "").strip() or DEFAULT_OUTPUT
+    # Always the Desktop: the whole point of this server is that nothing has
+    # to be chosen, so there is no output_dir to pass in.
+    output_dir = scraper.desktop_dir()
     try:
         os.makedirs(output_dir, exist_ok=True)
     except OSError as e:
-        raise HTTPException(400, f"Cannot use that folder: {e}")
+        raise HTTPException(400, f"Cannot write to the Desktop: {e}")
 
     job = Job(req.site, req.collection, output_dir)
     with jobs_lock:
@@ -150,29 +149,6 @@ def open_folder(job_id: str):
     else:
         subprocess.Popen(["xdg-open", job.folder])
     return {"ok": True}
-
-
-@app.get("/api/jobs/{job_id}/zip")
-def download_zip(job_id: str):
-    """For when the server is not the machine you are sitting at."""
-    job = get_job(job_id)
-    if not job.folder or not os.path.isdir(job.folder):
-        raise HTTPException(404, "No folder yet.")
-
-    name = os.path.basename(job.folder)
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        for root, _, files in os.walk(job.folder):
-            for f in files:
-                path = os.path.join(root, f)
-                z.write(path, os.path.relpath(path, job.folder))
-    buf.seek(0)
-
-    return StreamingResponse(
-        buf,
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{name}.zip"'},
-    )
 
 
 if __name__ == "__main__":

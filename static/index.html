@@ -60,7 +60,7 @@
 <body>
 <div class="wrap">
   <h1>Product Scraper</h1>
-  <p class="sub">Pull product names, prices and images from any Shopify or WooCommerce store.</p>
+  <p class="sub">Pull product names, prices and images from any Shopify, WooCommerce or Odoo store.</p>
 
   <div class="card">
     <div class="field">
@@ -72,20 +72,17 @@
     <div class="field">
       <label for="collection">Collection / page name <span style="font-weight:400;color:var(--muted)">- optional</span></label>
       <input id="collection" type="text" placeholder="leave empty for every product" autocomplete="off" spellcheck="false">
-      <p class="hint">Shopify collection or WooCommerce category. Accepts <code>luggage</code>, <code>/collections/luggage</code>, <code>/product-category/mugs</code>, or the full URL.</p>
     </div>
 
     <div class="field">
-      <label for="out">Save into</label>
-      <input id="out" type="text" spellcheck="false">
-      <p class="hint">A folder named after the store is created here, holding <code>images/</code>, <code>products.xlsx</code> and <code>products.csv</code>.</p>
+      <label>Saves to</label>
+      <p class="hint" id="out">the Desktop</p>
     </div>
 
     <div class="row">
       <button id="start" class="primary">Start scraping</button>
       <button id="stop" disabled>Stop</button>
       <button id="open" disabled>Open folder</button>
-      <button id="zip" disabled>Download ZIP</button>
       <span id="status">Ready</span>
     </div>
 
@@ -118,10 +115,7 @@ function setRunning(running) {
   $("start").disabled = running;
   $("stop").disabled = !running;
   bar.style.display = running ? "block" : "none";
-  if (running) {
-    $("open").disabled = true;
-    $("zip").disabled = true;
-  }
+  if (running) $("open").disabled = true;
 }
 
 async function api(path, options) {
@@ -148,7 +142,6 @@ async function start() {
       body: JSON.stringify({
         site,
         collection: $("collection").value.trim(),
-        output_dir: $("out").value.trim(),
       }),
     });
     jobId = data.job_id;
@@ -171,7 +164,6 @@ async function poll() {
     clearInterval(timer);
     setRunning(false);
     $("open").disabled = !s.folder;
-    $("zip").disabled = !s.folder;
 
     if (s.status === "done") setStatus("Done", "done");
     else if (s.status === "stopped") setStatus("Stopped - partial results saved");
@@ -199,13 +191,10 @@ $("open").addEventListener("click", async () => {
   }
 });
 
-$("zip").addEventListener("click", () => {
-  window.location = `/api/jobs/${jobId}/zip`;
-});
-
-// Prefill the output box with the server's default folder.
+// Show where the server will write. Nothing to choose - it is the Desktop of
+// the machine running server.py, which is what makes this work in any browser.
 api("/api/defaults")
-  .then((d) => { $("out").value = d.output_dir; })
+  .then((d) => { $("out").textContent = d.output_dir + "\\<website name>"; })
   .catch(() => {});
 </script>
 </body>

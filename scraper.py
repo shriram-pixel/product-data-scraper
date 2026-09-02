@@ -51,6 +51,37 @@ class ScrapeError(Exception):
 # helpers
 # --------------------------------------------------------------------------
 
+def desktop_dir():
+    """
+    The real Desktop, which is not always ~/Desktop: OneDrive backup moves it
+    to ~/OneDrive/Desktop and leaves the old path behind, so ask Windows where
+    it actually is before guessing.
+    """
+    if os.name == "nt":
+        try:
+            import winreg
+
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
+            )
+            with key:
+                path, _ = winreg.QueryValueEx(key, "Desktop")
+            if path and os.path.isdir(path):
+                return path
+        except OSError:
+            pass
+
+    home = os.path.expanduser("~")
+    for candidate in (
+        os.path.join(home, "Desktop"),
+        os.path.join(home, "OneDrive", "Desktop"),
+    ):
+        if os.path.isdir(candidate):
+            return candidate
+    return home
+
+
 def create_slug(text):
     text = (text or "").lower().strip().replace("&", "and")
     text = re.sub(r"[^a-z0-9\s-]", "", text)
