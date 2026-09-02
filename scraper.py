@@ -39,12 +39,6 @@ ODOO_NON_PRODUCT = {
     "address", "confirmation", "extra_info", "page", "category",
 }
 
-# Shopify appends a uuid to duplicated filenames: Green3_1958a945-5a5d-...jpg
-HASH_SUFFIX = re.compile(
-    r"_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
-)
-
-
 class Stopped(Exception):
     """Raised when the user presses Stop."""
 
@@ -67,17 +61,6 @@ def create_slug(text):
 def get_extension(url):
     ext = os.path.splitext(urlparse(url).path)[1]
     return ext if ext else ".jpg"
-
-
-def squash(text):
-    """'Dark Green' -> 'darkgreen';  'infographics-green-1' -> 'infographicsgreen1'"""
-    return re.sub(r"[^a-z0-9]", "", (text or "").lower())
-
-
-def filename_key(url):
-    """CDN url -> comparable filename stem, with Shopify's uuid stripped."""
-    stem = os.path.splitext(os.path.basename(urlparse(url).path))[0]
-    return squash(HASH_SUFFIX.sub("", stem))
 
 
 def normalise_site(url):
@@ -231,74 +214,13 @@ def fetch_shopify(site, collection, log, should_stop):
     return products
 
 
-def find_colour_position(product):
-    """Return 1/2/3 for the option slot holding colour, else None."""
-    for i, opt in enumerate(product.get("options", []), start=1):
-        if opt.get("name", "").strip().lower() in ("color", "colour"):
-            return i
-    return None
-
-
-def match_colour(url, colours):
-    """
-    Which colour does this filename belong to?
-    Longest match wins so 'Dark Green' beats 'Green'.
-    Returns None for shared assets (no colour in the name).
-    """
-    key = filename_key(url)
-    hits = [c for c in colours if squash(c) and squash(c) in key]
-    return max(hits, key=lambda c: len(squash(c))) if hits else None
-
-
-def default_colour_images(product):
-    """
-    Every image for the first variant's colour.
-
-    variant_ids alone is not enough: Shopify only lists images explicitly
-    attached to a variant, so infographics / size charts get missed. Stores
-    usually name files by colour (Green3.jpg, infographics-green-1.jpg), so
-    match on the filename and use variant_ids only as a fallback.
-    """
-    variants = product.get("variants", [])
-    images = product.get("images", [])
-
-    if not variants or not images:
-        return images, ""
-
-    default = variants[0]
-    pos = find_colour_position(product)
-
-    if not pos:                       # single-colour product: take everything
-        return images, ""
-
-    colour = default.get(f"option{pos}") or ""
-    colours = {v.get(f"option{pos}") for v in variants if v.get(f"option{pos}")}
-
-    # variants sharing this colour (Green/Cabin, Green/Check-in, ...)
-    ids = {v["id"] for v in variants if v.get(f"option{pos}") == colour}
-
-    keep = []
-    for img in images:
-        owner = match_colour(img["src"], colours)
-
-        if owner == colour:                                    # Green3.jpg
-            keep.append(img)
-        elif owner is not None:                                # Blue1.jpg -> skip
-            continue
-        elif set(img.get("variant_ids", [])) & ids:            # attached, unnamed
-            keep.append(img)
-        # anything else (no colour in name, attached to nothing) is dropped
-
-    if not keep:                                               # nothing matched
-        keep = [i for i in images if set(i.get("variant_ids", [])) & ids] or images[:1]
-
-    return keep, colour
-
-
 def normalise_shopify(p):
     variants = p.get("variants", [])
     first = variants[0] if variants else {}
-    images, colour = default_colour_images(p)
+    # Every image on the product. images[] is the full media set, including
+    # shots attached to no variant at all (size charts, lifestyle,
+    # infographics), so there is nothing further to look up.
+    image_urls = [img["src"] for img in p.get("images", []) if img.get("src")]
 
     return {
         # Base names on the handle, not the title: handles are unique per store
@@ -306,9 +228,9 @@ def normalise_shopify(p):
         "slug": p.get("handle") or p.get("title", ""),
         "title": p.get("title", ""),
         "price": first.get("price", ""),
-        "image_urls": [img["src"] for img in images],
-        "colour": colour,
-        "total_images": len(p.get("images", [])),
+        "image_urls": image_urls,
+        "colour": "",
+        "total_images": len(image_urls),
     }
 
 
@@ -443,6 +365,28 @@ def normalise_woo(p):
 #      one, so "stop when the page is empty" never fires. Stop on "no new
 #      links" instead.
 
+# Where the gallery lives depends on the Odoo version and theme: older builds
+# use a plain .carousel-inner, 15+ wraps it in #o-carousel-product with a
+# separate thumbnail strip, and some themes render only a bare
+# img.product_detail_img. Reading all of them and de-duplicating afterwards is
+# what stops a product coming back with just its cover shot.
+ODOO_IMAGE_SELECTOR = ", ".join([
+    "#o-carousel-product img",
+    ".carousel-inner img",
+    ".o_carousel_product_indicators img",
+    ".o_product_feature_panel img",
+    "img.product_detail_img",
+    ".oe_product_image img",
+    'img[itemprop="image"]',
+])
+
+# Lazy-loading themes leave src on a spacer and put the real URL in a data
+# attribute, so the src-only read used to return one image or none.
+ODOO_IMAGE_ATTRS = (
+    "src", "data-src", "data-zoom-image", "data-lazy-img-src", "data-original",
+)
+
+
 def odoo_is_product_path(path):
     path = path.rstrip("/")
     if not path.startswith("/shop/"):
@@ -545,14 +489,19 @@ def hydrate_odoo(item):
         item["price"] = "Not Available For Sale"
 
     urls, seen = [], set()
-    for img in soup.select(".carousel-inner img"):
-        src = img.get("src") or img.get("data-src") or ""
-        if not src:
+    for img in soup.select(ODOO_IMAGE_SELECTOR):
+        src = next((img.get(a) for a in ODOO_IMAGE_ATTRS if (img.get(a) or "").strip()), "")
+        src = (src or "").strip()
+        if not src or src.startswith("data:"):   # inline placeholder
             continue
 
         src = urljoin(site, src).replace("&amp;", "&")
-        # the carousel serves thumbnails; ask for the full-size render instead
-        src = re.sub(r"/image_(128|256|512|1024)/", "/image_1920/", src)
+        if not urlparse(src).path.lower().startswith("/web/image/"):
+            continue                             # theme icon, logo
+
+        # Thumbnails and the main shot are the same image at different sizes.
+        # Upgrading first means the dedupe below collapses them to one entry.
+        src = re.sub(r"/image_\d+/", "/image_1920/", src)
 
         key = src.split("?")[0]
         if key not in seen:
@@ -634,8 +583,7 @@ def parse_product(item, image_folder, log, should_stop):
     colour = item["colour"]
     label = f"{item['slug']} {colour}".strip() if colour else item["slug"]
 
-    log(f"Scraping: {item['title']} | default colour: {colour or 'n/a'} "
-        f"| {len(item['image_urls'])}/{item['total_images']} images")
+    log(f"Scraping: {item['title']} | {len(item['image_urls'])} images")
 
     image_names = download_images(
         item["image_urls"], label, image_folder, log, should_stop

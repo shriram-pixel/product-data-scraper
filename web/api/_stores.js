@@ -8,9 +8,6 @@ import { load } from "cheerio";
 //
 // All are normalised to: { title, slug, price, imageUrls, colour, totalImages }
 
-const HASH_SUFFIX =
-  /_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 export const USER_AGENT = "Mozilla/5.0";
 const WOO_API = "/wp-json/wc/store/v1";
 const WOO_PER_PAGE = 100; // Store API caps per_page at 100
@@ -37,19 +34,6 @@ export function createSlug(text) {
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "")
     .slice(0, 150);
-}
-
-export function squash(text) {
-  return (text || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
-function stem(url) {
-  const path = new URL(url, "https://x").pathname;
-  return (path.split("/").pop() || "").replace(/\.[^.]*$/, "");
-}
-
-export function filenameKey(url) {
-  return squash(stem(url).replace(HASH_SUFFIX, ""));
 }
 
 export function getExtension(url) {
@@ -195,73 +179,13 @@ async function fetchShopify(site, collection) {
   return products;
 }
 
-/** Return 1/2/3 for the option slot holding colour, else null. */
-function findColourPosition(product) {
-  const options = product.options || [];
-  for (let i = 0; i < options.length; i++) {
-    const name = (options[i].name || "").trim().toLowerCase();
-    if (name === "color" || name === "colour") return i + 1;
-  }
-  return null;
-}
-
-/**
- * Which colour does this filename belong to?
- * Longest match wins so 'Dark Green' beats 'Green'.
- * Returns null for shared assets (no colour in the name).
- */
-function matchColour(url, colours) {
-  const key = filenameKey(url);
-  const hits = colours.filter((c) => squash(c) && key.includes(squash(c)));
-  if (!hits.length) return null;
-  return hits.reduce((a, b) => (squash(b).length > squash(a).length ? b : a));
-}
-
-/**
- * Every image for the first variant's colour.
- *
- * variant_ids alone is not enough: Shopify only lists images explicitly
- * attached to a variant, so infographics / size charts get missed. Stores
- * usually name files by colour (Green3.jpg, infographics-green-1.jpg), so
- * match on the filename and use variant_ids only as a fallback.
- */
-function defaultColourImages(product) {
-  const variants = product.variants || [];
-  const images = product.images || [];
-  if (!variants.length || !images.length) return { images, colour: "" };
-
-  const first = variants[0];
-  const pos = findColourPosition(product);
-  if (!pos) return { images, colour: "" }; // single-colour product: take everything
-
-  const key = `option${pos}`;
-  const colour = first[key] || "";
-  const colours = [...new Set(variants.map((v) => v[key]).filter(Boolean))];
-
-  // variants sharing this colour (Green/Cabin, Green/Check-in, ...)
-  const ids = new Set(variants.filter((v) => v[key] === colour).map((v) => v.id));
-
-  let keep = [];
-  for (const img of images) {
-    const owner = matchColour(img.src, colours);
-    if (owner === colour) keep.push(img); // Green3.jpg
-    else if (owner !== null) continue; // Blue1.jpg -> skip
-    else if ((img.variant_ids || []).some((id) => ids.has(id))) keep.push(img);
-    // anything else (no colour in name, attached to nothing) is dropped
-  }
-
-  if (!keep.length) {
-    keep = images.filter((i) => (i.variant_ids || []).some((id) => ids.has(id)));
-    if (!keep.length) keep = images.slice(0, 1);
-  }
-
-  return { images: keep, colour };
-}
-
 function normaliseShopify(p) {
   const variants = p.variants || [];
   const first = variants[0] || {};
-  const { images, colour } = defaultColourImages(p);
+  // Every image on the product. images[] is the full media set, including
+  // shots attached to no variant at all (size charts, lifestyle, infographics),
+  // so there is nothing further to look up.
+  const imageUrls = (p.images || []).map((img) => img.src).filter(Boolean);
 
   return {
     // Base names on the handle, not the title: handles are unique per store
@@ -269,9 +193,9 @@ function normaliseShopify(p) {
     slug: p.handle || p.title || "",
     title: p.title || "",
     price: first.price || "",
-    imageUrls: images.map((img) => img.src),
-    colour,
-    totalImages: (p.images || []).length,
+    imageUrls,
+    colour: "",
+    totalImages: imageUrls.length,
   };
 }
 
@@ -411,6 +335,31 @@ function normaliseWoo(p) {
 //      one, so "stop when the page is empty" never fires. Stop on "no new
 //      links" instead.
 
+// Where the gallery lives depends on the Odoo version and theme: older builds
+// use a plain .carousel-inner, 15+ wraps it in #o-carousel-product with a
+// separate thumbnail strip, and some themes render only a bare
+// img.product_detail_img. Reading all of them and de-duplicating afterwards is
+// what stops a product coming back with just its cover shot.
+const ODOO_IMAGE_SELECTOR = [
+  "#o-carousel-product img",
+  ".carousel-inner img",
+  ".o_carousel_product_indicators img",
+  ".o_product_feature_panel img",
+  "img.product_detail_img",
+  ".oe_product_image img",
+  'img[itemprop="image"]',
+].join(", ");
+
+// Lazy-loading themes leave src on a spacer and put the real URL in a data
+// attribute, so the src-only read used to return one image or none.
+const ODOO_IMAGE_ATTRS = [
+  "src", "data-src", "data-zoom-image", "data-lazy-img-src", "data-original",
+];
+
+// Product images are always served from /web/image/...; this keeps theme
+// chrome (logos, payment icons) out of the ZIP.
+const ODOO_IMAGE_PATH = /^\/web\/image\//i;
+
 export function odooIsProductPath(path) {
   const clean = path.replace(/\/+$/, "");
   if (!clean.startsWith("/shop/")) return false;
@@ -504,9 +453,10 @@ export async function hydrateOdoo(detailUrl) {
 
   const imageUrls = [];
   const seen = new Set();
-  $(".carousel-inner img").each((_, img) => {
-    const raw = $(img).attr("src") || $(img).attr("data-src") || "";
-    if (!raw) return;
+  $(ODOO_IMAGE_SELECTOR).each((_, img) => {
+    const el = $(img);
+    const raw = (ODOO_IMAGE_ATTRS.map((a) => el.attr(a)).find((v) => v && v.trim()) || "").trim();
+    if (!raw || raw.startsWith("data:")) return; // inline placeholder
 
     let src;
     try {
@@ -514,8 +464,11 @@ export async function hydrateOdoo(detailUrl) {
     } catch {
       return;
     }
-    // the carousel serves thumbnails; ask for the full-size render instead
-    src = src.replace(/\/image_(128|256|512|1024)\//, "/image_1920/");
+    if (!ODOO_IMAGE_PATH.test(new URL(src).pathname)) return; // theme icon, logo
+
+    // Thumbnails and the main shot are the same image at different sizes.
+    // Upgrading first means the dedupe below collapses them to one entry.
+    src = src.replace(/\/image_\d+\//, "/image_1920/");
 
     const key = src.split("?")[0];
     if (!seen.has(key)) {
