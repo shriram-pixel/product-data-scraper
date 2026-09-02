@@ -607,21 +607,39 @@ def download_images(image_urls, base_name, image_folder, log, should_stop):
     return names
 
 
-def parse_product(item, image_folder, log, should_stop):
+def unique_name(title, seen):
+    """
+    'Zill Watch' -> ('Zill Watch', 'zill-watch'), so the files on disk read
+    like the Product Name column rather than like the store's URL handle.
+
+    Titles repeat - the same watch in black and in white is two products - so
+    the second onward is numbered: 'Zill Watch 2' saved as zill-watch2.jpg.
+    The number is glued on without a hyphen deliberately: zill-watch-2.jpg is
+    already the third image of the first Zill Watch.
+    """
+    base = create_slug(title) or "product"
+    seen[base] = seen.get(base, 0) + 1
+    n = seen[base]
+
+    if n == 1:
+        return title, base
+    return f"{title} {n}", f"{base}{n}"
+
+
+def parse_product(item, image_folder, log, should_stop, seen):
     if item.get("detail_url"):          # Odoo: everything lives on the detail page
         hydrate_odoo(item)
 
-    colour = item["colour"]
-    label = f"{item['slug']} {colour}".strip() if colour else item["slug"]
+    name, base = unique_name(item["title"], seen)
 
-    log(f"Scraping: {item['title']} | {len(item['image_urls'])} images")
+    log(f"Scraping: {name} | {len(item['image_urls'])} images")
 
     image_names = download_images(
-        item["image_urls"], label, image_folder, log, should_stop
+        item["image_urls"], base, image_folder, log, should_stop
     )
 
     return {
-        "Product Name": item["title"],
+        "Product Name": name,
         "Price": item["price"],
         "Image": ",".join(image_names),
     }
@@ -648,11 +666,12 @@ def scrape(site, collection, base_output_dir, log=print, should_stop=lambda: Fal
     log(f"\nTotal products: {len(items)}")
 
     rows = []
+    seen = {}                     # slug -> how many products have used it
     try:
         for i, item in enumerate(items, 1):
             log(f"\n{i}/{len(items)}")
             try:
-                rows.append(parse_product(item, image_folder, log, should_stop))
+                rows.append(parse_product(item, image_folder, log, should_stop, seen))
             except Stopped:
                 raise
             except Exception as e:

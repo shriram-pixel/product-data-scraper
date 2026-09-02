@@ -18,7 +18,12 @@ export default async function handler(req, res) {
     // resolvePlatform may switch to the www. host, so use what it returns.
     const { platform, site } = await resolvePlatform(normaliseSite(req.query.site));
     const { items } = await collectProducts(site, collection, platform);
-    const rows = items.map(buildRow);
+
+    // One counter for the whole run, so a repeated title is numbered rather
+    // than overwriting the first product's files. Not `items.map(buildRow)`:
+    // map would hand the array index over as the counter.
+    const seen = new Map();
+    const rows = items.map((item) => buildRow(item, seen));
 
     res.setHeader("Cache-Control", "no-store");
     res.status(200).json({

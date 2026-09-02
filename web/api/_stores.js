@@ -494,25 +494,42 @@ export async function collectProducts(site, collection, platform) {
   return { platform: kind, items: (await fetchWoo(site, collection)).map(normaliseWoo) };
 }
 
+/**
+ * 'Zill Watch' -> ('Zill Watch', 'zill-watch'), so the files on disk read like
+ * the Product Name column rather than like the store's URL handle.
+ *
+ * Titles repeat - the same watch in black and in white is two products - so
+ * the second onward is numbered: 'Zill Watch 2' saved as zill-watch2.jpg. The
+ * number is glued on without a hyphen deliberately: zill-watch-2.jpg is
+ * already the third image of the first Zill Watch.
+ *
+ * `seen` counts the slugs used so far and is carried across a whole run.
+ */
+export function uniqueName(title, seen) {
+  const base = createSlug(title) || "product";
+  const n = (seen.get(base) || 0) + 1;
+  seen.set(base, n);
+
+  return n === 1 ? { name: title, base } : { name: `${title} ${n}`, base: `${base}${n}` };
+}
+
 /** One normalised product -> the row plus the image URLs and their filenames. */
-export function buildRow(item) {
-  const base = item.colour ? `${item.slug} ${item.colour}` : item.slug;
-  const slug = createSlug(base);
+export function buildRow(item, seen = new Map()) {
+  const { name, base } = uniqueName(item.title || item.slug, seen);
 
   const files = item.imageUrls.map((raw, i) => {
     const url = String(raw).split("?")[0];
     return {
       url,
-      name: i === 0 ? `${slug}${getExtension(url)}` : `${slug}-${i}${getExtension(url)}`,
+      name: i === 0 ? `${base}${getExtension(url)}` : `${base}-${i}${getExtension(url)}`,
     };
   });
 
   return {
-    "Product Name": item.title,
+    "Product Name": name,
     Price: item.price,
     Image: files.map((f) => f.name).join(","),
     _files: files,
-    _colour: item.colour,
     _totalImages: item.totalImages,
     // Odoo rows arrive empty; the browser fills them in via /api/product.
     ...(item.detailUrl ? { _detail: item.detailUrl } : {}),

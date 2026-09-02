@@ -200,6 +200,45 @@ function setBusy(busy) {
   bar.style.display = busy ? "block" : "none";
 }
 
+/** Mirrors createSlug() in api/_stores.js. */
+function slugify(text) {
+  return (text || "")
+    .toLowerCase()
+    .trim()
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9\s-]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 150);
+}
+
+/**
+ * Odoo rows are hydrated one request at a time, so /api/product cannot know
+ * that a title has already been used - only the browser, holding all of them,
+ * can. Applies the same rule as uniqueName() in api/_stores.js: a second
+ * 'Zill Watch' becomes 'Zill Watch 2' with files named zill-watch2*.
+ */
+function renumberDuplicates(rows) {
+  const seen = new Map();
+
+  for (const row of rows) {
+    const title = row["Product Name"] || "";
+    const base = slugify(title) || "product";
+    const n = (seen.get(base) || 0) + 1;
+    seen.set(base, n);
+    if (n === 1) continue;
+
+    const renamed = `${base}${n}`;
+    row["Product Name"] = `${title} ${n}`;
+    row._files.forEach((file, i) => {
+      const ext = file.name.slice(file.name.lastIndexOf("."));
+      file.name = (i === 0 ? renamed : `${renamed}-${i}`) + ext;
+    });
+    row.Image = row._files.map((f) => f.name).join(",");
+  }
+}
+
 /** Excel needs the BOM to read UTF-8 correctly. */
 function toCsv(rows) {
   const esc = (v) => {
@@ -432,6 +471,7 @@ async function run(folderHandle, reusedFolder) {
           log(`  ${read}/${data.rows.length} product pages`);
       });
 
+      renumberDuplicates(detailed);
       data.rows = detailed;
       data.imageCount = detailed.reduce((n, r) => n + r._files.length, 0);
       bar.value = 0;
