@@ -60,20 +60,14 @@ without the user having pointed at a folder at least once. `app.py` has no such
 limit - it is a local process, so it creates the folder itself with no dialog
 ever.
 
-**Firefox and Safari get ZIPs**, because that is the only output they can
-produce: they have no `showDirectoryPicker`, and no other web API lets a page
-write a folder. Those split at ~300 MB into `example-com-part1.zip`,
-`example-com-part2.zip` and so on - unzip them all into the same folder and the
-`images/` directories merge. The spreadsheets ride in the **last** part, the
-only one written after every row is known, and list every image across every
-part.
+**There is no ZIP, under any condition.** Cancelling the picker stops the run
+before a single request goes out, rather than falling back to archives. An
+earlier version did fall back, and on a large store that meant thirteen of
+them.
 
-**Chrome and Edge never produce one.** Cancelling the picker there stops the
-run before a single request goes out rather than falling back to archives -
-the folder is the point, and cancelling is a choice, not a dead end.
-
-For a desktop folder with no picker and no archive on any browser, use
-`app.py`: it is a local process, so none of this applies to it.
+The cost is that **desktop Chrome or Edge is required**: Firefox and Safari
+have no `showDirectoryPicker`, and no other web API lets a page write a folder.
+They are told to switch rather than handed something nobody wanted.
 
 ## Notes and limits
 
