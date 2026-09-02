@@ -60,15 +60,14 @@ without the user having pointed at a folder at least once. `app.py` has no such
 limit - it is a local process, so it creates the folder itself with no dialog
 ever.
 
-Every browser can run the scraper; only the saving differs. Firefox and Safari
-have no `showDirectoryPicker` - no web API lets them write a folder - so they
-download ZIPs instead, and so does cancelling the picker. Those split at ~300 MB into
-`example-com-part1.zip`, `example-com-part2.zip` and so on: unzip them all
-into the same folder and the `images/` directories merge. The spreadsheets
-ride in the **last** part, the only one written after every row is known, and
-list every image across every part. The splitting is not cosmetic - a finished
-part is written out and dropped, which is what keeps a large store inside the
-browser's memory.
+**There is no ZIP, under any condition.** Cancelling the picker stops the run
+before a single request goes out, rather than falling back to archives. An
+earlier version did fall back, and on a large store that meant thirteen of
+them.
+
+The cost is that **desktop Chrome or Edge is required**: Firefox and Safari
+have no `showDirectoryPicker`, and no other web API lets a page write a folder.
+They are told to switch rather than handed something nobody wanted.
 
 ## Notes and limits
 
@@ -92,11 +91,9 @@ browser's memory.
 - The folder picker needs the click's user activation, so it is opened from the
   Start handler rather than inside `run()`. By the time the product list comes
   back that activation has expired and the call would be rejected.
-- On the ZIP fallback the archive is assembled from the generator's chunks
-  rather than with `generateAsync({type:"blob"})`. That call concatenates the
-  whole archive into one contiguous `Uint8Array` first, which throws
-  `Array buffer allocation failed` on a store of a few GB. Between the chunked
-  assembly and the 300 MB split, peak memory is one part rather than the whole
-  run.
-- On the ZIP fallback the browser asks once for permission to download multiple
-  files. Declining it loses every part after the first.
+- Writing files as they arrive is also what removed `Array buffer allocation
+  failed`. Building a ZIP in memory meant `generateAsync({type:"blob"})`
+  concatenating the whole archive into one contiguous `Uint8Array`, which a
+  few GB of images will not fit into.
+- Filenames pass through a whitelist (`A-Za-z0-9._-`) before they reach disk:
+  Windows rejects `: ? * " < > |` and the API rejects `/`.

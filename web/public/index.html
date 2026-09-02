@@ -168,10 +168,9 @@
   </div>
 
   <pre id="log"></pre>
-  <p class="note">Chrome and Edge ask once for a folder, then create <code>&lt;store-name&gt;/</code> inside it holding <code>images/</code>, <code>products.xlsx</code> and <code>products.csv</code>. That choice is remembered, so later runs go straight there. Firefox and Safari cannot write folders at all, so they download the same files as ZIPs.</p>
+  <p class="note">Press Start and choose a folder once. A <code>&lt;store-name&gt;/</code> folder is created inside it holding <code>images/</code>, <code>products.xlsx</code> and <code>products.csv</code>, and the choice is remembered so later runs go straight there. Needs Chrome or Edge on desktop.</p>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
 const COLUMNS = ["Product Name", "Price", "Image"];
@@ -230,45 +229,6 @@ async function pool(items, limit, worker) {
     }
   });
   await Promise.all(runners);
-}
-
-function saveBlob(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
-}
-
-function mb(bytes) {
-  return (bytes / 1024 / 1024).toFixed(1) + " MB";
-}
-
-/**
- * Build the archive without ever holding it as one contiguous buffer.
- *
- * generateAsync({type:"blob"}) concatenates the whole ZIP into a single
- * Uint8Array first, which throws "Array buffer allocation failed" once a
- * store runs to a few GB of images. Collecting the stream's chunks and
- * handing the array to the Blob constructor lets the browser back them with
- * disk instead, so peak memory is one chunk rather than the whole ZIP.
- */
-function zipToBlob(zip, onPercent) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    zip
-      .generateInternalStream({ type: "uint8array" })
-      .on("data", (chunk, meta) => {
-        chunks.push(chunk);
-        if (onPercent) onPercent(meta.percent);
-      })
-      .on("error", reject)
-      .on("end", () => resolve(new Blob(chunks, { type: "application/zip" })))
-      .resume();
-  });
 }
 
 /**
@@ -395,74 +355,7 @@ async function createFolderSink(root, folder) {
   };
 }
 
-/**
- * Fallback for browsers without the folder picker: collect images into ZIPs,
- * starting a new one each time the current part passes PART_LIMIT. Splitting
- * is what bounds memory here - a finished part is written out and dropped,
- * releasing every image blob inside it. Stores small enough for one part still
- * get a single `<store>.zip`.
- */
-const PART_LIMIT = 300 * 1024 * 1024; // image bytes per ZIP
-
-function createParts(folder) {
-  let zip, images, bytes;
-  let saved = 0;
-  let lock = Promise.resolve();
-
-  const reset = () => {
-    zip = new JSZip();
-    images = zip.folder("images");
-    bytes = 0;
-  };
-  reset();
-
-  // Images arrive from CONCURRENCY workers at once; serialise so a part is
-  // never generated while another worker is still writing into it.
-  const serial = (fn) => {
-    const run = lock.then(fn, fn);
-    lock = run.then(() => {}, () => {});
-    return run;
-  };
-
-  async function write(extras) {
-    const current = zip;
-    for (const [file, body] of Object.entries(extras || {})) current.file(file, body);
-
-    // Claim the name and hand the next part a clean slate before the slow
-    // build: if generating throws, the failure must not leave `bytes` over
-    // the limit, or every remaining image would trigger another attempt.
-    const name = saved === 0 && extras ? `${folder}.zip` : `${folder}-part${saved + 1}.zip`;
-    saved++;
-    reset();
-
-    statusEl.textContent = "Building " + name;
-    log(`\nBuilding ${name} ...`);
-    const blob = await zipToBlob(current, (p) => (bar.value = Math.round(p)));
-    saveBlob(blob, name);
-    log(`Saved ${name} (${mb(blob.size)})`);
-    return name;
-  }
-
-  return {
-    kind: "zip",
-    add: (name, blob) =>
-      serial(async () => {
-        images.file(name, blob);
-        bytes += blob.size;
-        if (bytes >= PART_LIMIT) await write(null);
-      }),
-    // The spreadsheets list every image across every part, so they ride in
-    // the last ZIP - it is the only one written after all rows are known.
-    // Always written, even when the last image happened to close a part, or
-    // the sheets would be lost.
-    finish: (extras) => serial(() => write(extras)),
-    get parts() {
-      return saved;
-    },
-  };
-}
-
-async function run(folderHandle, noFolderReason, reusedFolder) {
+async function run(folderHandle, reusedFolder) {
   stopped = false;
   logEl.innerHTML = "";
   logEl.style.display = "none";
@@ -534,26 +427,19 @@ async function run(folderHandle, noFolderReason, reusedFolder) {
       }
     }
 
-    const sink = folderHandle
-      ? await createFolderSink(folderHandle, data.folder)
-      : createParts(data.folder);
-    if (sink.kind === "folder") {
-      log(
-        `Saving into ${folderHandle.name}/${data.folder}/` +
-          (reusedFolder ? "  (the folder you picked last time)" : "") +
-          "\n"
-      );
-    } else {
-      log(noFolderReason || "No folder was chosen.", true);
-      log("This run downloads ZIPs instead.\n");
-    }
+    const sink = await createFolderSink(folderHandle, data.folder);
+    log(
+      `Saving into ${folderHandle.name}/${data.folder}/` +
+        (reusedFolder ? "  (the folder you picked last time)" : "") +
+        "\n"
+    );
 
     const jobs = [];
     // keep the file object itself: its name may be corrected after download
     data.rows.forEach((row) => row._files.forEach((file) => jobs.push(file)));
 
     let done = 0, failed = 0;
-    const saved = new Set();          // filenames that actually made it into a zip
+    const saved = new Set();          // filenames that actually reached the disk
 
     await pool(jobs, CONCURRENCY, async (job) => {
       let blob = null;
@@ -576,7 +462,7 @@ async function run(folderHandle, noFolderReason, reusedFolder) {
         log("  image failed: " + job.name + " (" + e.message + ")", true);
       }
 
-      // Deliberately outside the catch: a failure to build the ZIP is not an
+      // Deliberately outside the catch: failing to write to disk is not an
       // image failure, and must stop the run rather than be logged 600 times.
       if (blob) {
         await sink.add(job.name, blob);
@@ -588,7 +474,7 @@ async function run(folderHandle, noFolderReason, reusedFolder) {
       if (done % 10 === 0 || done === jobs.length) log(`  ${done}/${jobs.length} images`);
     });
 
-    // Only list images that made it into the zip, in the store's own order
+    // Only list images that made it onto the disk, in the store's own order
     // (a plain sort would put "-10" before "-2" and the cover image last).
     const rows = data.rows.map((r) => ({
       "Product Name": r["Product Name"],
@@ -605,14 +491,7 @@ async function run(folderHandle, noFolderReason, reusedFolder) {
     log("\nDone!");
     log("Rows: " + rows.length + " | images: " + (jobs.length - failed) +
         (failed ? " | failed: " + failed : ""));
-    if (sink.kind === "folder") {
-      log(`Everything is in ${last}/ - images/, products.xlsx and products.csv.`);
-    } else if (sink.parts > 1) {
-      log(`Saved as ${sink.parts} ZIPs - the store was too large for one file.`);
-      log(`Unzip them all into the same folder; the spreadsheets are in ${last}.`);
-    } else {
-      log("Unzip it to get images/, products.xlsx and products.csv.");
-    }
+    log(`Everything is in ${folderHandle.name}/${last}/ - images/, products.xlsx and products.csv.`);
     statusEl.textContent = stopped ? "Stopped - partial save" : "Done";
   } catch (e) {
     log("\nERROR: " + e.message, true);
@@ -624,10 +503,20 @@ async function run(folderHandle, noFolderReason, reusedFolder) {
 
 // The picker is opened here, not inside run(): it needs the click's user
 // activation, which would already have expired by the time the product list
-// came back. No picker (or a cancelled one) falls back to ZIP downloads.
+// came back.
 $("start").addEventListener("click", async () => {
   const picked = await pickFolder();
-  await run(picked.handle, picked.why, picked.reused);
+
+  // Without a folder there is nowhere to put the files, and this tool does not
+  // produce archives. Say so and stop, rather than scrape for an hour first.
+  if (!picked.handle) {
+    logEl.innerHTML = "";
+    log(picked.why, true);
+    log("Nothing was scraped. Press Start and choose a folder to save into.");
+    return;
+  }
+
+  await run(picked.handle, picked.reused);
 });
 
 // Escape hatch: the folder is remembered, so there has to be a way to move it.
