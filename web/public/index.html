@@ -289,7 +289,16 @@ if ("showDirectoryPicker" in window) {
 
 async function pickFolder() {
   if (!("showDirectoryPicker" in window)) {
-    return { handle: null, why: "This browser has no folder picker - desktop Chrome or Edge has one." };
+    // An embedded view is by far the likeliest cause on a desktop machine:
+    // the API is hidden inside iframes and webviews (VS Code's Simple
+    // Browser, in-app browsers) even where the real browser supports it.
+    const embedded = window.top !== window.self;
+    return {
+      handle: null,
+      why: embedded
+        ? "This page is running inside an embedded browser view, which hides the folder picker. Open the URL in a normal Chrome or Edge window."
+        : "This browser has no folder picker - desktop Chrome or Edge has one.",
+    };
   }
 
   // Reuse last time's folder: silent when the grant survived, otherwise a
