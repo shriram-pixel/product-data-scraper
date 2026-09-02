@@ -3,9 +3,9 @@ Product Scraper - desktop UI.
 
 Run:  python app.py
 
-Paste a store link, optionally a collection name, pick where to save.
-A folder named after the site is created there, holding images/ +
-products.xlsx + products.csv.
+Paste a store link, optionally a collection name, press Start. A folder
+named after the site is created on the Desktop, holding images/ +
+products.xlsx + products.csv. Nothing to choose and nothing to unzip.
 """
 
 import os
@@ -13,12 +13,40 @@ import queue
 import threading
 import subprocess
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, messagebox
 
 import scraper
 
-SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".product_scraper.txt")
-DEFAULT_OUTPUT = os.path.join(os.path.expanduser("~"), "Desktop", "Scraped Products")
+
+def desktop_dir():
+    """
+    The real Desktop, which is not always ~/Desktop: OneDrive backup moves it
+    to ~/OneDrive/Desktop and leaves the old path behind, so ask Windows where
+    it actually is before guessing.
+    """
+    if os.name == "nt":
+        try:
+            import winreg
+
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
+            )
+            with key:
+                path, _ = winreg.QueryValueEx(key, "Desktop")
+            if path and os.path.isdir(path):
+                return path
+        except OSError:
+            pass
+
+    home = os.path.expanduser("~")
+    for candidate in (
+        os.path.join(home, "Desktop"),
+        os.path.join(home, "OneDrive", "Desktop"),
+    ):
+        if os.path.isdir(candidate):
+            return candidate
+    return home
 
 
 class App(tk.Tk):
@@ -61,14 +89,12 @@ class App(tk.Tk):
             foreground="#666",
         ).grid(row=2, column=1, sticky="w", padx=(8, 0))
 
-        ttk.Label(form, text="Save into").grid(row=3, column=0, sticky="w", pady=(8, 0))
-        self.out_var = tk.StringVar(value=self._load_output_dir())
-        ttk.Entry(form, textvariable=self.out_var).grid(
-            row=3, column=1, sticky="ew", padx=(8, 0), pady=(8, 0)
-        )
-        ttk.Button(form, text="Browse...", command=self._browse).grid(
-            row=3, column=2, sticky="e", padx=(8, 0), pady=(8, 0)
-        )
+        ttk.Label(form, text="Saves to").grid(row=3, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(
+            form,
+            text=os.path.join(desktop_dir(), "<website name>"),
+            foreground="#666",
+        ).grid(row=3, column=1, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0))
 
         bar = ttk.Frame(self)
         bar.pack(fill="x", padx=10)
@@ -97,29 +123,6 @@ class App(tk.Tk):
         sb.pack(side="right", fill="y")
         self.log.configure(yscrollcommand=sb.set, state="disabled")
 
-    def _browse(self):
-        chosen = filedialog.askdirectory(initialdir=self.out_var.get() or os.getcwd())
-        if chosen:
-            self.out_var.set(chosen)
-
-    # --------------------------------------------------------------- state
-    def _load_output_dir(self):
-        try:
-            with open(SETTINGS_FILE, encoding="utf-8") as f:
-                saved = f.read().strip()
-            if saved:
-                return saved
-        except OSError:
-            pass
-        return DEFAULT_OUTPUT
-
-    def _save_output_dir(self, path):
-        try:
-            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-                f.write(path)
-        except OSError:
-            pass                      # remembering the folder is a nicety, not critical
-
     # ------------------------------------------------------------- logging
     def _write(self, text):
         self.log_queue.put(text)
@@ -141,22 +144,17 @@ class App(tk.Tk):
     # ----------------------------------------------------------- run / stop
     def _start(self):
         site = self.site_var.get().strip()
-        out_dir = self.out_var.get().strip()
+        out_dir = desktop_dir()
 
         if not site:
             messagebox.showwarning("Missing link", "Paste the website link first.")
-            return
-        if not out_dir:
-            messagebox.showwarning("Missing folder", "Choose where to save the files.")
             return
 
         try:
             os.makedirs(out_dir, exist_ok=True)
         except OSError as e:
-            messagebox.showerror("Folder error", f"Cannot use that folder:\n{e}")
+            messagebox.showerror("Folder error", f"Cannot write to the Desktop:\n{e}")
             return
-
-        self._save_output_dir(out_dir)
 
         self.log.configure(state="normal")
         self.log.delete("1.0", "end")
