@@ -242,6 +242,99 @@ function saveBlob(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 
+function mb(bytes) {
+  return (bytes / 1024 / 1024).toFixed(1) + " MB";
+}
+
+/**
+ * Build the archive without ever holding it as one contiguous buffer.
+ *
+ * generateAsync({type:"blob"}) concatenates the whole ZIP into a single
+ * Uint8Array first, which throws "Array buffer allocation failed" once a
+ * store runs to a few GB of images. Collecting the stream's chunks and
+ * handing the array to the Blob constructor lets the browser back them with
+ * disk instead, so peak memory is one chunk rather than the whole ZIP.
+ */
+function zipToBlob(zip, onPercent) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    zip
+      .generateInternalStream({ type: "uint8array" })
+      .on("data", (chunk, meta) => {
+        chunks.push(chunk);
+        if (onPercent) onPercent(meta.percent);
+      })
+      .on("error", reject)
+      .on("end", () => resolve(new Blob(chunks, { type: "application/zip" })))
+      .resume();
+  });
+}
+
+/**
+ * Collects images into ZIPs, starting a new one each time the current part
+ * passes PART_LIMIT. Splitting is what actually bounds memory: a finished
+ * part is written out and dropped, releasing every image blob inside it.
+ * Stores small enough for one part still get a single `<store>.zip`.
+ */
+const PART_LIMIT = 300 * 1024 * 1024; // image bytes per ZIP
+
+function createParts(folder) {
+  let zip, images, bytes;
+  let saved = 0;
+  let lock = Promise.resolve();
+
+  const reset = () => {
+    zip = new JSZip();
+    images = zip.folder("images");
+    bytes = 0;
+  };
+  reset();
+
+  // Images arrive from CONCURRENCY workers at once; serialise so a part is
+  // never generated while another worker is still writing into it.
+  const serial = (fn) => {
+    const run = lock.then(fn, fn);
+    lock = run.then(() => {}, () => {});
+    return run;
+  };
+
+  async function write(extras) {
+    const current = zip;
+    for (const [file, body] of Object.entries(extras || {})) current.file(file, body);
+
+    // Claim the name and hand the next part a clean slate before the slow
+    // build: if generating throws, the failure must not leave `bytes` over
+    // the limit, or every remaining image would trigger another attempt.
+    const name = saved === 0 && extras ? `${folder}.zip` : `${folder}-part${saved + 1}.zip`;
+    saved++;
+    reset();
+
+    statusEl.textContent = "Building " + name;
+    log(`\nBuilding ${name} ...`);
+    const blob = await zipToBlob(current, (p) => (bar.value = Math.round(p)));
+    saveBlob(blob, name);
+    log(`Saved ${name} (${mb(blob.size)})`);
+    return name;
+  }
+
+  return {
+    add: (name, blob) =>
+      serial(async () => {
+        images.file(name, blob);
+        bytes += blob.size;
+        if (bytes >= PART_LIMIT) await write(null);
+      }),
+    // The spreadsheets list every image across every part, so they ride in
+    // the last ZIP - it is the only one written after all rows are known.
+    // Always written, even when the last image happened to close a part, or
+    // the sheets would be lost.
+    finish: (extras) => serial(() => write(extras)),
+    get saved() {
+      return saved;
+    },
+  };
+}
+
 async function run() {
   stopped = false;
   logEl.innerHTML = "";
@@ -314,16 +407,16 @@ async function run() {
       }
     }
 
-    const zip = new JSZip();
-    const images = zip.folder("images");
+    const parts = createParts(data.folder);
     const jobs = [];
     // keep the file object itself: its name may be corrected after download
     data.rows.forEach((row) => row._files.forEach((file) => jobs.push(file)));
 
     let done = 0, failed = 0;
-    const saved = new Set();          // filenames that actually made it into the zip
+    const saved = new Set();          // filenames that actually made it into a zip
 
     await pool(jobs, CONCURRENCY, async (job) => {
+      let blob = null;
       try {
         const r = await fetch(
           "/api/image?url=" + encodeURIComponent(job.url) +
@@ -331,19 +424,23 @@ async function run() {
         );
         if (!r.ok) throw new Error("HTTP " + r.status);
 
-        const blob = await r.blob();
+        blob = await r.blob();
         // Odoo image URLs carry no extension, so trust what the server sent
         // rather than leaving a png named .jpg.
         const wanted = MIME_EXT[(blob.type || "").split(";")[0].trim().toLowerCase()];
         if (wanted && !job.name.toLowerCase().endsWith(wanted)) {
           job.name = job.name.replace(/\.[^.]*$/, wanted);
         }
-
-        images.file(job.name, blob);
-        saved.add(job.name);
       } catch (e) {
         failed++;
         log("  image failed: " + job.name + " (" + e.message + ")", true);
+      }
+
+      // Deliberately outside the catch: a failure to build the ZIP is not an
+      // image failure, and must stop the run rather than be logged 600 times.
+      if (blob) {
+        await parts.add(job.name, blob);
+        saved.add(job.name);
       }
       done++;
       bar.value = Math.round((done / jobs.length) * 100);
@@ -359,18 +456,20 @@ async function run() {
       Image: r._files.filter((f) => saved.has(f.name)).map((f) => f.name).join(","),
     }));
 
-    zip.file("products.csv", toCsv(rows));
-    zip.file("products.xlsx", toXlsx(rows));
+    const last = await parts.finish({
+      "products.csv": toCsv(rows),
+      "products.xlsx": toXlsx(rows),
+    });
 
-    statusEl.textContent = "Building ZIP...";
-    log("\nBuilding ZIP...");
-    const blob = await zip.generateAsync({ type: "blob" });
-    saveBlob(blob, data.folder + ".zip");
-
-    log("\nDone! Saved " + data.folder + ".zip");
+    log("\nDone!");
     log("Rows: " + rows.length + " | images: " + (jobs.length - failed) +
         (failed ? " | failed: " + failed : ""));
-    log("Unzip it to get images/, products.xlsx and products.csv.");
+    if (parts.saved > 1) {
+      log(`Saved as ${parts.saved} ZIPs - the store was too large for one file.`);
+      log(`Unzip them all into the same folder; the spreadsheets are in ${last}.`);
+    } else {
+      log("Unzip it to get images/, products.xlsx and products.csv.");
+    }
     statusEl.textContent = stopped ? "Stopped - partial ZIP saved" : "Done";
   } catch (e) {
     log("\nERROR: " + e.message, true);

@@ -50,6 +50,13 @@ example-com.zip
 Unzip it wherever you want the folder. A collection run zips as
 `example-com-luggage.zip` so runs never overwrite each other.
 
+Past ~300 MB of images the download splits into `example-com-part1.zip`,
+`example-com-part2.zip` and so on. Unzip them all into the same folder and the
+`images/` directories merge. The spreadsheets ride in the **last** part, which
+is the only one written after every row is known; they list every image across
+every part. Splitting is not cosmetic - a finished part is written out and
+dropped, which is what keeps a large store inside the browser's memory.
+
 ## Notes and limits
 
 - **Shopify, WooCommerce (WordPress) and Odoo stores.** The platform is
@@ -69,5 +76,12 @@ Unzip it wherever you want the folder. A collection run zips as
   runs in.
 - Vercel caps a function response at ~4.5 MB, so an unusually large source
   image is skipped and logged rather than silently dropped.
-- The ZIP is built in browser memory. Very large stores (thousands of images)
-  are better run with the local `app.py`, which streams to disk.
+- The ZIP is built in browser memory, so it is assembled from the generator's
+  chunks rather than with `generateAsync({type:"blob"})`. That call concatenates
+  the whole archive into one contiguous `Uint8Array` first, which throws
+  `Array buffer allocation failed` on a store of a few GB. Between the chunked
+  assembly and the 300 MB split above, peak memory is one part rather than the
+  whole run - but a very large store is still calmer through the local
+  `app.py`, which streams straight to disk.
+- The browser will ask once for permission to download multiple files when a
+  store splits into parts. Declining it loses every part after the first.
