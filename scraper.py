@@ -572,13 +572,36 @@ CONTENT_TYPE_EXT = {
 }
 
 
-def download_images(image_urls, base_name, image_folder, log, should_stop):
+def url_extension(url):
+    return os.path.splitext(urlparse(str(url).split("?")[0]).path)[1]
+
+
+def planned_names(image_urls, base):
+    """
+    The filenames before anything is downloaded, so the spreadsheet can be
+    written first. Odoo URLs carry no extension and only the response reveals
+    it, so those are pencilled in as .jpg and corrected once the image lands.
+    """
     names = []
-    slug = create_slug(base_name)
+    for i, url in enumerate(image_urls):
+        ext = url_extension(url) or ".jpg"
+        names.append(f"{base}{ext}" if i == 0 else f"{base}-{i}{ext}")
+    return names
+
+
+def download_images(image_urls, names, image_folder, log, should_stop):
+    """
+    Fetch each image under its planned name. Returns the ones that landed.
+
+    Stopping breaks rather than raising: the files written before the stop are
+    on disk, and throwing away the list of them would leave the spreadsheet
+    claiming fewer images than the folder actually holds.
+    """
+    saved = []
 
     for i, url in enumerate(image_urls):
         if should_stop():
-            raise Stopped()
+            break
 
         url = str(url)
         try:
@@ -588,23 +611,22 @@ def download_images(image_urls, base_name, image_folder, log, should_stop):
 
             # Odoo image URLs carry no extension, so fall back to what the
             # server actually sent rather than guessing .jpg for a png.
-            ext = os.path.splitext(urlparse(url.split("?")[0]).path)[1]
-            if not ext:
+            name = names[i]
+            if not url_extension(url):
                 mime = r.headers.get("Content-Type", "").split(";")[0].strip().lower()
-                ext = CONTENT_TYPE_EXT.get(mime, ".jpg")
+                name = os.path.splitext(name)[0] + CONTENT_TYPE_EXT.get(mime, ".jpg")
 
-            name = f"{slug}{ext}" if i == 0 else f"{slug}-{i}{ext}"
             with open(os.path.join(image_folder, name), "wb") as f:
                 f.write(r.content)
 
             log(f"  image: {name}")
-            names.append(name)
+            saved.append(name)
         except Exception as e:
             log(f"  image error: {e}")
 
         time.sleep(0.2)
 
-    return names
+    return saved
 
 
 def unique_name(title, seen):
@@ -626,23 +648,17 @@ def unique_name(title, seen):
     return f"{title} {n}", f"{base}{n}"
 
 
-def parse_product(item, image_folder, log, should_stop, seen):
-    if item.get("detail_url"):          # Odoo: everything lives on the detail page
-        hydrate_odoo(item)
+def write_sheets(out_dir, rows, log):
+    """products.xlsx + products.csv. Called twice: once before the images are
+    fetched so the sheet is there immediately, once after to correct it."""
+    excel_path = os.path.join(out_dir, "products.xlsx")
+    csv_path = os.path.join(out_dir, "products.csv")
 
-    name, base = unique_name(item["title"], seen)
+    df = pd.DataFrame(rows, columns=COLUMNS)      # exact columns, exact order
+    df.to_excel(excel_path, index=False)
+    df.to_csv(csv_path, index=False, encoding="utf-8-sig")
 
-    log(f"Scraping: {name} | {len(item['image_urls'])} images")
-
-    image_names = download_images(
-        item["image_urls"], base, image_folder, log, should_stop
-    )
-
-    return {
-        "Product Name": name,
-        "Price": item["price"],
-        "Image": ",".join(image_names),
-    }
+    return excel_path, csv_path
 
 
 def scrape(site, collection, base_output_dir, log=print, should_stop=lambda: False):
@@ -665,27 +681,63 @@ def scrape(site, collection, base_output_dir, log=print, should_stop=lambda: Fal
     _, items = collect_products(site, collection, log, should_stop, platform)
     log(f"\nTotal products: {len(items)}")
 
-    rows = []
+    # Pass 1: names, prices and the filenames the images will get. Nothing here
+    # needs the images themselves, so the spreadsheet can be finished first.
+    rows, jobs = [], []
     seen = {}                     # slug -> how many products have used it
+    stopped = False
+
     try:
         for i, item in enumerate(items, 1):
-            log(f"\n{i}/{len(items)}")
             try:
-                rows.append(parse_product(item, image_folder, log, should_stop, seen))
+                if item.get("detail_url"):        # Odoo: one page fetch each
+                    if should_stop():
+                        raise Stopped()
+                    hydrate_odoo(item)
+                    if i % 25 == 0 or i == len(items):
+                        log(f"  read {i}/{len(items)} product pages")
+
+                name, base = unique_name(item["title"], seen)
+                names = planned_names(item["image_urls"], base)
+
+                rows.append({
+                    "Product Name": name,
+                    "Price": item["price"],
+                    "Image": ",".join(names),
+                })
+                jobs.append((name, item["image_urls"], names))
             except Stopped:
                 raise
             except Exception as e:
                 log(f"Product error: {e}")
-            time.sleep(0.3)
     except Stopped:
-        log("\nStopped - saving what was scraped so far...")
+        stopped = True
+        log("\nStopped while reading products.")
 
-    excel_path = os.path.join(out_dir, "products.xlsx")
-    csv_path = os.path.join(out_dir, "products.csv")
+    excel_path, csv_path = write_sheets(out_dir, rows, log)
+    log(f"\nSpreadsheet written: {excel_path}")
+    log(f"Now downloading {sum(len(j[2]) for j in jobs)} images...")
 
-    df = pd.DataFrame(rows, columns=COLUMNS)      # exact columns, exact order
-    df.to_excel(excel_path, index=False)
-    df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    # Pass 2: the slow part. The sheet already exists, so a stop here costs
+    # only images - it is rewritten below with whatever actually landed.
+    downloaded = []
+    if not stopped:
+        for i, (name, urls, names) in enumerate(jobs, 1):
+            log(f"\n{i}/{len(jobs)}  {name} | {len(urls)} images")
+            downloaded.append(
+                download_images(urls, names, image_folder, log, should_stop)
+            )
+            if should_stop():
+                stopped = True
+                log("\nStopped - keeping the images already downloaded.")
+                break
+            time.sleep(0.3)
+
+    # The sheet must list what is on disk, not what was planned: a stop leaves
+    # later products with no images, and an Odoo .jpg may have landed as .png.
+    for i, row in enumerate(rows):
+        row["Image"] = ",".join(downloaded[i]) if i < len(downloaded) else ""
+    write_sheets(out_dir, rows, log)
 
     log("\nDone!")
     log(f"Platform: {platform}")
