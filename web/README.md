@@ -37,11 +37,13 @@ means no ceiling on store size and a real progress bar.
 
 ## What you get
 
-Chrome and Edge ask once for a folder when you press Start, then write each
-file into it as it downloads:
+Chrome and Edge ask **once** for a folder to keep scrapes in. The handle is
+stored in IndexedDB, so every later run goes straight there - no dialog, no
+prompt. Inside it a folder named after the store is created and filled as the
+files download:
 
 ```
-<the folder you chose>/
+<the folder you chose once>/
   example-com/
     images/
     products.xlsx    <- Product Name, Price, Image
@@ -50,7 +52,13 @@ file into it as it downloads:
 
 Nothing accumulates in memory, so there is no ceiling on store size and
 nothing to unzip - the same shape `app.py` produces locally. A collection run
-saves under `example-com-luggage/` so runs never overwrite each other.
+saves under `example-com-luggage/` so runs never overwrite each other. **Change
+folder** moves where future runs land.
+
+The first pick cannot be skipped: no browser will let a page write to disk
+without the user having pointed at a folder at least once. `app.py` has no such
+limit - it is a local process, so it creates the folder itself with no dialog
+ever.
 
 Every browser can run the scraper; only the saving differs. Firefox and Safari
 have no `showDirectoryPicker` - no web API lets them write a folder - so they

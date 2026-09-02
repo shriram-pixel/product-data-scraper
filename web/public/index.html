@@ -160,6 +160,7 @@
     <div class="actions">
       <button id="start" class="primary">Start scraping</button>
       <button id="stop" disabled>Stop</button>
+      <button id="folder" hidden>Change folder</button>
       <span id="status">Ready</span>
     </div>
 
@@ -167,7 +168,7 @@
   </div>
 
   <pre id="log"></pre>
-  <p class="note">Chrome and Edge ask for a folder and write <code>images/</code>, <code>products.xlsx</code> and <code>products.csv</code> straight into it. Firefox and Safari cannot save folders, so they download the same files as ZIPs instead.</p>
+  <p class="note">Chrome and Edge ask once for a folder, then create <code>&lt;store-name&gt;/</code> inside it holding <code>images/</code>, <code>products.xlsx</code> and <code>products.csv</code>. That choice is remembered, so later runs go straight there. Firefox and Safari cannot write folders at all, so they download the same files as ZIPs.</p>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
@@ -275,12 +276,80 @@ function zipToBlob(zip, onPercent) {
  * handler: the picker needs the gesture, and by the time the product list has
  * been fetched that activation is long gone.
  */
+/**
+ * The chosen folder is kept in IndexedDB, which is the only thing a page may
+ * store a directory handle in. Browsers will not let a site write to disk
+ * without the user having pointed at a folder at least once, so the picker
+ * cannot be skipped outright - but it only has to happen the first time.
+ */
+const DB_NAME = "product-scraper", DB_STORE = "handles", DB_KEY = "folder";
+let rememberedFolder = null;
+
+function openDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(DB_STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function loadFolder() {
+  try {
+    const db = await openDb();
+    return await new Promise((resolve, reject) => {
+      const req = db.transaction(DB_STORE, "readonly").objectStore(DB_STORE).get(DB_KEY);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+  } catch {
+    return null; // remembering is a convenience, never a requirement
+  }
+}
+
+async function saveFolder(handle) {
+  try {
+    const db = await openDb();
+    await new Promise((resolve, reject) => {
+      const req = db.transaction(DB_STORE, "readwrite").objectStore(DB_STORE).put(handle, DB_KEY);
+      req.onsuccess = resolve;
+      req.onerror = () => reject(req.error);
+    });
+  } catch {
+    /* the run still works, it just asks again next time */
+  }
+}
+
+// Read it up front: by the time Start is clicked the handle must already be in
+// hand, because re-granting permission needs that click's user activation.
+if ("showDirectoryPicker" in window) {
+  $("folder").hidden = false;
+  loadFolder().then((h) => (rememberedFolder = h));
+}
+
 async function pickFolder() {
   if (!("showDirectoryPicker" in window)) {
     return { handle: null, why: "This browser has no folder picker - desktop Chrome or Edge has one." };
   }
+
+  // Reuse last time's folder: silent when the grant survived, otherwise a
+  // one-click confirm rather than the whole file dialog again.
+  if (rememberedFolder) {
+    try {
+      let state = await rememberedFolder.queryPermission({ mode: "readwrite" });
+      if (state !== "granted") {
+        state = await rememberedFolder.requestPermission({ mode: "readwrite" });
+      }
+      if (state === "granted") return { handle: rememberedFolder, why: "", reused: true };
+    } catch {
+      /* handle went stale - fall through and ask again */
+    }
+  }
+
   try {
     const handle = await window.showDirectoryPicker({ mode: "readwrite", id: "product-scraper" });
+    rememberedFolder = handle;
+    await saveFolder(handle);
     return { handle, why: "" };
   } catch (e) {
     // Reported through run() rather than logged here: run() clears the log as
@@ -393,7 +462,7 @@ function createParts(folder) {
   };
 }
 
-async function run(folderHandle, noFolderReason) {
+async function run(folderHandle, noFolderReason, reusedFolder) {
   stopped = false;
   logEl.innerHTML = "";
   logEl.style.display = "none";
@@ -469,7 +538,11 @@ async function run(folderHandle, noFolderReason) {
       ? await createFolderSink(folderHandle, data.folder)
       : createParts(data.folder);
     if (sink.kind === "folder") {
-      log(`Saving into ${data.folder}/ in the folder you chose.\n`);
+      log(
+        `Saving into ${folderHandle.name}/${data.folder}/` +
+          (reusedFolder ? "  (the folder you picked last time)" : "") +
+          "\n"
+      );
     } else {
       log(noFolderReason || "No folder was chosen.", true);
       log("This run downloads ZIPs instead.\n");
@@ -554,7 +627,20 @@ async function run(folderHandle, noFolderReason) {
 // came back. No picker (or a cancelled one) falls back to ZIP downloads.
 $("start").addEventListener("click", async () => {
   const picked = await pickFolder();
-  await run(picked.handle, picked.why);
+  await run(picked.handle, picked.why, picked.reused);
+});
+
+// Escape hatch: the folder is remembered, so there has to be a way to move it.
+$("folder").addEventListener("click", async () => {
+  try {
+    const handle = await window.showDirectoryPicker({ mode: "readwrite", id: "product-scraper" });
+    rememberedFolder = handle;
+    await saveFolder(handle);
+    logEl.innerHTML = "";
+    log(`Runs will be saved into "${handle.name}" from now on.`);
+  } catch (e) {
+    if (e.name !== "AbortError") log("Could not open the folder picker: " + e.message, true);
+  }
 });
 $("stop").addEventListener("click", () => {
   stopped = true;
