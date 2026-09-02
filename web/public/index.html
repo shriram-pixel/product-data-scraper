@@ -296,8 +296,16 @@ async function pickFolder() {
     return {
       handle: null,
       why: embedded
-        ? "This page is running inside an embedded browser view, which hides the folder picker. Open the URL in a normal Chrome or Edge window."
-        : "This browser has no folder picker - desktop Chrome or Edge has one.",
+        ? "This page is inside an embedded browser view, which hides the folder picker. Open the URL in a normal Chrome or Edge window."
+        : "This browser cannot save files into a folder - only Chrome and Edge can.",
+      fix: embedded
+        ? null
+        : "Two ways round it:\n" +
+          "  1. Open this same link in Chrome or Edge.\n" +
+          "  2. Run the scraper on your own PC, which works in any browser\n" +
+          "     including this one, and saves straight to the Desktop:\n" +
+          "         python server.py\n" +
+          "     then open http://127.0.0.1:8001",
     };
   }
 
@@ -521,7 +529,7 @@ $("start").addEventListener("click", async () => {
   if (!picked.handle) {
     logEl.innerHTML = "";
     log(picked.why, true);
-    log("Nothing was scraped. Press Start and choose a folder to save into.");
+    log(picked.fix || "Nothing was scraped. Press Start and choose a folder to save into.");
     return;
   }
 
